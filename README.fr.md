@@ -16,6 +16,6 @@ La conservation, la suppression et la restauration demandent des règles cohére
 
 ## Disponibilité
 
-Ce dépôt contient actuellement uniquement de la documentation ; aucun outil installable n’est disponible.
+Ce dépôt contient du code source et des tests ; aucun paquet n’est publié dans un registre.
 
 Découvrez le [catalogue des projets Libre AI](https://github.com/libre-ai/.github/blob/main/profile/README.fr.md).

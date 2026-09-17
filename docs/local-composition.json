@@ -1,0 +1,21 @@
+{
+  "status": "local-source-composition-not-registry-release",
+  "originalInputs": "code-recovery-provenance.json",
+  "adaptedFiles": [
+    {
+      "path": "packages/data/package.json",
+      "originalSha256": "a515653cff78934a8d1ed31cb3d01440c4cdb6298f8d9bdbf0a5100821656ce4",
+      "currentSha256": "4074c197833b51aef73269e2c6b310d3868a36e4646ced9c7dd73dd537ba5e1b"
+    },
+    {
+      "path": "packages/rgpd-kit/package.json",
+      "originalSha256": "d0faf669b559de1fe242e31ebff9c356d7018fcaba8f0a137f9002d270b40923",
+      "currentSha256": "2a2979be2392871c66410e754594f9b4855f383c43a188438a2375aa3d37b992"
+    }
+  ],
+  "notes": [
+    "Existing APIs and package versions retained.",
+    "No historical deployment workflows activated.",
+    "Current contracts resolve to sibling schemas-and-contracts; recovery directory is provenance only."
+  ]
+}

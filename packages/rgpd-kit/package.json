@@ -1,0 +1,51 @@
+{
+  "name": "@libre-ai/rgpd-kit",
+  "version": "0.1.0",
+  "description": "Transverse RGPD compliance brick \u2014 typed models, data-subject-rights ports, Art. 30 and DPIA scaffolding. Pure types: no tables, no I/O; each product implements the port in its own bounded context.",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "keywords": [
+    "libre-ai",
+    "rgpd",
+    "gdpr",
+    "data-subject-rights",
+    "compliance"
+  ],
+  "homepage": "https://libre-ai.fr",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/libre-ai/rgpd-kit.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check:bun:runtime": "bun node_modules/@libre-ai/governance/tools/quality/check-bun-minimum.ts",
+    "check:bun": "bun run check:bun:runtime && bun node_modules/@libre-ai/governance/tools/quality/check-bun-manifests.ts",
+    "check:toolchain": "bun run check:bun && bun node_modules/@libre-ai/governance/tools/quality/check-toolchain.ts",
+    "check:secret-scan": "bun run check:bun:runtime && bun node_modules/@libre-ai/governance/tools/quality/check-secret-scan.ts",
+    "check:personal-data": "bun run check:bun:runtime && bun node_modules/@libre-ai/governance/tools/quality/check-personal-data-boundary.ts",
+    "lint": "bun run check:bun:runtime && biome ci .",
+    "typecheck": "bun run check:bun:runtime && tsc --noEmit -p tsconfig.json",
+    "pretest": "bun run check:bun",
+    "test": "bun test",
+    "check": "bun run check:bun && bun run check:toolchain && bun run check:secret-scan && bun run check:personal-data && bun run lint && bun run typecheck && bun run test"
+  },
+  "packageManager": "bun@1.4.0-canary.1",
+  "overrides": {
+    "fast-uri": "4.1.4"
+  },
+  "devDependencies": {
+    "@libre-ai/governance": "file:../../../project-governance",
+    "@biomejs/biome": "2.5.3",
+    "@types/bun": "1.3.14",
+    "typescript": "7.0.2"
+  }
+}

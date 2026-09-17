@@ -1,0 +1,22 @@
+{
+  "name": "@libre-ai/organization-data-lifecycle",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "bun run --filter \"./packages/*\" test",
+    "typecheck": "bun run --filter \"./packages/*\" typecheck",
+    "lint": "bun run --filter \"./packages/*\" lint",
+    "check": "bun run --filter \"./packages/*\" check"
+  },
+  "overrides": {
+    "@libre-ai/governance": "file:../project-governance",
+    "@libre-ai/contracts-authority": "file:../schemas-and-contracts"
+  },
+  "devDependencies": {
+    "@libre-ai/contracts-authority": "file:../schemas-and-contracts"
+  }
+}

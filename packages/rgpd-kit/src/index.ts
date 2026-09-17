@@ -1,0 +1,72 @@
+export {
+  createDpiaScaffold,
+  type DPIAAssessment,
+  type DpiaScaffoldInput,
+  type DpiaYesNoQuestion,
+  InvalidDpiaScaffoldError,
+} from "./aida-template";
+export {
+  DATA_SUBJECT_TYPES,
+  type DataSubjectType,
+  generateArt30Register,
+  InvalidProcessingActivityError,
+  type ProcessingActivity,
+  TRANSFER_MECHANISMS,
+  type TransferMechanism,
+  validateProcessingActivity,
+} from "./art30-register";
+export {
+  CONSENT_GRANT_CHANNELS,
+  CONSENT_WITHDRAWAL_CHANNELS,
+  type ConsentGrant,
+  type ConsentGrantChannel,
+  type ConsentRecord,
+  type ConsentWithdrawal,
+  type ConsentWithdrawalChannel,
+  InvalidConsentPeriodError,
+  InvalidConsentRecordError,
+  isConsentActiveAt,
+} from "./consent";
+export {
+  DATA_CATEGORIES,
+  type DataCategory,
+  type DataCategoryDeclaration,
+  ERASURE_SCOPES,
+  type ErasureScope,
+  InvalidDataCategoryDeclarationError,
+  LEGAL_BASES,
+  type LegalBasis,
+  validateDataCategoryDeclaration,
+} from "./data-category";
+export {
+  type AccessFulfilled,
+  type AccessRequestResult,
+  computeResponseDeadline,
+  DATA_SUBJECT_RIGHT_TYPES,
+  type DataSubjectRequest,
+  type DataSubjectRightType,
+  type ErasureFulfilled,
+  type ErasureRequestResult,
+  InvalidDataSubjectRequestError,
+  isRestrictionGround,
+  isRgpdRefusalCode,
+  type PortabilityFulfilled,
+  type PortabilityRequestResult,
+  REQUEST_CHANNELS,
+  REQUEST_STATUSES,
+  RESTRICTION_GROUNDS,
+  type RequestChannel,
+  type RequestStatus,
+  type RestrictionFulfilled,
+  type RestrictionGround,
+  type RestrictionRequestResult,
+  type RgpdRefusal,
+  validateDataSubjectRequest,
+} from "./data-subject-request";
+export type { DataSubjectRightsPort } from "./ports/data-subject-rights";
+export {
+  deriveSubjectDigest,
+  InvalidSubjectIdentifierError,
+  isOpaqueSubjectDigest,
+  MalformedTenantIdError,
+} from "./subject-digest";
