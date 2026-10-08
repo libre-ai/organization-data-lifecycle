@@ -1,0 +1,50 @@
+# Project state card — the authority on this repository's state (ADR-0020).
+# The README status section is generated from this card (sentinels).
+schema_version: libre-ai.project.v1
+project: organization-data-lifecycle
+repository: libre-ai/organization-data-lifecycle
+kind: satellite
+layer: couche-4
+statement:
+  for: "contributors assessing and developing this project's intended uses"
+  who_faces: recovered sources whose current integrated behavior still requires verification
+  enables: inspecting the recovered implementation and running its declared checks before admission
+  producing:
+    - reproducible qualification evidence for the intended scope
+  without_depending_on:
+    - an implicit transfer of historical authority or an assumed passing CI run
+summary: "organization-data-lifecycle: recovered sources with documentary integration under review."
+current_situation: >-
+  Recovered source snapshot cf5c85999b72930a2388a80951305b9b4934d3f2 is present.
+  Product tests and CI were not rerun for this documentary integration; historical
+  evidence is not qualification of this tree. No product admission or authority
+  transfer is established. Historical responsibilities are not transferred here;
+  the short-name repository that held them has been retired.
+scope:
+  - Apply an explicit retention rule to a selected category of organization data.
+  - Follow a scoped deletion request across the stores that hold that data.
+  - Restore a backup while accounting for data that should remain deleted.
+non_goals:
+  - Claiming operational readiness merely from the presence of recovered code.
+  - Transferring historical authority or consumers without separate reviewed admission.
+dependencies:
+  - on: libre-ai/project-governance
+    why: Current fleet doctrine and reusable verification workflows.
+    pinned: "github:libre-ai/project-governance#2024a4884b314df99be457618be9c3b48a0287f7"
+maturity: idea
+confidence: medium
+exposure: idea
+freshness:
+  last_verified_on: "2026-10-07"
+scope_stability: unstable
+phases:
+  - id: admission
+    title: Bounded capability admission
+    note: Recovered code is present. Documentary checks do not accept product qualification criteria.
+    exit_criteria:
+      - id: qualified-scope
+        text: "Qualify each selected function with its own consumer and evidence. Database drivers, SQL roles, migrations and storage callbacks require qualification when that integration is selected; they are not prerequisites for admitting a pure function. Test missing organization context, unauthorized access, retention limits, holds where applicable, failures and restoration after deletion. Verify the outcome in every affected storage system: queuing a blob deletion is not proof that the blob was erased. Preserve each imported file’s applicable license and attribution."
+        weight: 1
+        status: pending
+benchmark:
+  none: No benchmark was executed for this integrated tree.
