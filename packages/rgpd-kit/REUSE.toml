@@ -2,7 +2,7 @@
 version = 1
 SPDX-PackageName = "rgpd-kit"
 SPDX-PackageSupplier = "Libre AI <https://github.com/libre-ai>"
-SPDX-PackageDownloadLocation = "https://github.com/libre-ai/rgpd-kit"
+SPDX-PackageDownloadLocation = "https://github.com/libre-ai/organization-data-lifecycle"
 
 [[annotations]]
 path = ["**"]
