@@ -2,7 +2,7 @@
 version = 1
 SPDX-PackageName = "data"
 SPDX-PackageSupplier = "Libre AI <https://github.com/libre-ai>"
-SPDX-PackageDownloadLocation = "https://github.com/libre-ai/data"
+SPDX-PackageDownloadLocation = "https://github.com/libre-ai/organization-data-lifecycle"
 
 [[annotations]]
 path = ["**"]
