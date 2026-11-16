@@ -14,22 +14,30 @@ import type { SqlExecutor } from "./executor";
  *   second one waits, then sees what the first one applied.
  *
  * Both need every statement on the SAME session: `session` is one dedicated
- * connection (PGlite, or `DatabaseClient.withSession`), never a pool.
+ * connection (PGlite, or `withDedicatedSession` in database-client.ts), never
+ * a pool.
  *
  * The list is append-only: add at the end, never reorder.
  */
 export interface Migration {
   readonly id: string;
+  /**
+   * Receives the runner's own session, inside the transaction that also
+   * carries the record. It must not end that transaction itself: the session
+   * is lent whole, so a COMMIT issued here cannot be stopped, and what it
+   * made durable is neither undone nor recorded if the migration then fails.
+   */
   run(session: SqlExecutor): Promise<void>;
 }
 
 export type MigrationJournal = (message: string) => void;
 
 export class InvalidMigrationIdError extends Error {
-  constructor(id: string) {
+  constructor(id: unknown) {
     // The value is not echoed: the shape check is what keeps journal lines
     // and error messages free of anything but a plain identifier.
-    super(`malformed migration identifier (a ${id.length}-char value)`);
+    const shape = typeof id === "string" ? `a ${id.length}-char value` : `a ${typeof id} value`;
+    super(`malformed migration identifier (${shape})`);
     this.name = "InvalidMigrationIdError";
   }
 }
@@ -72,43 +80,85 @@ export async function migrate(
 ): Promise<void> {
   const listed = new Set<string>();
   for (const migration of migrations) {
-    if (!SAFE_MIGRATION_ID.test(migration.id)) {
-      throw new InvalidMigrationIdError(migration.id);
+    // The type is checked at run time too: a list built from data can carry
+    // `undefined` or a number, which the pattern would coerce to text and pass.
+    const id: unknown = migration.id;
+    if (typeof id !== "string" || !SAFE_MIGRATION_ID.test(id)) {
+      throw new InvalidMigrationIdError(id);
     }
-    if (listed.has(migration.id)) {
-      throw new DuplicateMigrationIdError(migration.id);
+    if (listed.has(id)) {
+      throw new DuplicateMigrationIdError(id);
     }
-    listed.add(migration.id);
+    listed.add(id);
   }
 
   await session.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_KEY]);
+  let failure: { readonly error: unknown } | undefined;
   try {
-    await session.exec(
-      `CREATE TABLE IF NOT EXISTS schema_migrations (
-         id text PRIMARY KEY,
-         applied_at timestamptz NOT NULL DEFAULT now()
-       )`,
-    );
-    const recorded = await session.query<AppliedRow>("SELECT id FROM schema_migrations");
-    const applied = new Set(recorded.rows.map((row) => row.id));
-
-    for (const migration of migrations) {
-      if (applied.has(migration.id)) {
-        continue;
-      }
-      journal?.(`applying migration ${migration.id}`);
-      await session.exec("BEGIN");
-      try {
-        await migration.run(session);
-        await session.query("INSERT INTO schema_migrations (id) VALUES ($1)", [migration.id]);
-        await session.exec("COMMIT");
-      } catch (error) {
-        await session.exec("ROLLBACK");
-        throw new MigrationFailedError(migration.id, error);
-      }
-      journal?.(`${migration.id} applied`);
-    }
-  } finally {
+    await applyPending(session, migrations, journal);
+  } catch (error) {
+    failure = { error };
+  }
+  try {
     await session.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_KEY]);
+  } catch (unlockError) {
+    // A session lost midway rejects the unlock as well. That rejection must
+    // not replace the error naming the migration; with nothing else to
+    // report, it is the outcome.
+    if (failure === undefined) {
+      throw unlockError;
+    }
+  }
+  if (failure !== undefined) {
+    throw failure.error;
+  }
+}
+
+async function applyPending(
+  session: SqlExecutor,
+  migrations: readonly Migration[],
+  journal: MigrationJournal | undefined,
+): Promise<void> {
+  await session.exec(
+    `CREATE TABLE IF NOT EXISTS schema_migrations (
+       id text PRIMARY KEY,
+       applied_at timestamptz NOT NULL DEFAULT now()
+     )`,
+  );
+  const recorded = await session.query<AppliedRow>("SELECT id FROM schema_migrations");
+  const applied = new Set(recorded.rows.map((row) => row.id));
+
+  for (const migration of migrations) {
+    if (applied.has(migration.id)) {
+      continue;
+    }
+    journal?.(`applying migration ${migration.id}`);
+    try {
+      // BEGIN sits inside the try: once a migration is announced, whatever
+      // rejects next is reported under its identifier.
+      await session.exec("BEGIN");
+      await migration.run(session);
+      await session.query("INSERT INTO schema_migrations (id) VALUES ($1)", [migration.id]);
+      await session.exec("COMMIT");
+    } catch (error) {
+      await rollbackIfReachable(session);
+      throw new MigrationFailedError(migration.id, error);
+    }
+    journal?.(`${migration.id} applied`);
+  }
+}
+
+/**
+ * A session that rejects ROLLBACK is lost, and the server aborts the
+ * transaction of a lost session by itself. The migration's own error is the
+ * one to report, so this rejection is dropped. A session still alive with its
+ * transaction open cannot be reset afterwards: `withDedicatedSession` closes
+ * it instead of giving it back to the pool.
+ */
+async function rollbackIfReachable(session: SqlExecutor): Promise<void> {
+  try {
+    await session.exec("ROLLBACK");
+  } catch {
+    // Dropped on purpose, see above.
   }
 }

@@ -289,6 +289,121 @@ describe("a failing migration", () => {
   });
 });
 
+describe("a failing migration whose clean-up fails too", () => {
+  // The common real failure is a connection lost midway: the statement
+  // rejects, and so does everything sent after it. The contract does not
+  // bend: the run rejects naming the migration, driver text out of the message.
+
+  test("session lost while recording: ROLLBACK and unlock reject, the migration is still named", async () => {
+    const runs: string[] = [];
+    const migration = statementMigration("0001_only", "CREATE TABLE only_things (n integer)", runs);
+    const driverErrors: Error[] = [];
+    let lost = false;
+    const lostSession = observed(tdb.db, (sql) => {
+      if (/INSERT\s+INTO\s+schema_migrations/i.test(sql)) {
+        lost = true;
+      }
+      if (lost) {
+        const error = new Error("connection lost: quoted-row-value");
+        driverErrors.push(error);
+        throw error;
+      }
+    });
+
+    let caught: unknown;
+    try {
+      await migrate(lostSession, [migration]);
+    } catch (error) {
+      caught = error;
+    } finally {
+      // Stand-in for the server, which aborts the transaction of a lost session.
+      await tdb.db.exec("ROLLBACK");
+    }
+
+    expect(caught).toBeInstanceOf(MigrationFailedError);
+    const failure = caught as MigrationFailedError;
+    expect(failure.message).toBe("migration 0001_only failed");
+    expect(failure.migrationId).toBe("0001_only");
+    // The first rejection is the cause; ROLLBACK and unlock were both attempted.
+    expect(driverErrors).toHaveLength(3);
+    expect(failure.cause).toBe(driverErrors[0]);
+  });
+
+  test("unlock rejected after a failed migration: the migration is still named", async () => {
+    const cause = new Error("boom");
+    const broken: Migration = {
+      id: "0001_broken",
+      run: async () => {
+        throw cause;
+      },
+    };
+    let unlockAttempts = 0;
+    const failingUnlock = observed(tdb.db, (sql) => {
+      if (/pg_advisory_unlock/i.test(sql)) {
+        unlockAttempts += 1;
+        throw new Error("connection lost on unlock");
+      }
+    });
+
+    let caught: unknown;
+    try {
+      await migrate(failingUnlock, [broken]);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(MigrationFailedError);
+    const failure = caught as MigrationFailedError;
+    expect(failure.message).toBe("migration 0001_broken failed");
+    expect(failure.cause).toBe(cause);
+    expect(unlockAttempts).toBe(1);
+  });
+
+  test("BEGIN rejected: the announced migration is named and never runs", async () => {
+    const runs: string[] = [];
+    const messages: string[] = [];
+    const migration = statementMigration("0001_only", "CREATE TABLE only_things (n integer)", runs);
+    const beginFailure = new Error("connection lost on begin");
+    const failingBegin = observed(tdb.db, (sql) => {
+      if (/^\s*BEGIN\b/i.test(sql)) {
+        throw beginFailure;
+      }
+    });
+
+    let caught: unknown;
+    try {
+      await migrate(failingBegin, [migration], (message) => messages.push(message));
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(MigrationFailedError);
+    const failure = caught as MigrationFailedError;
+    expect(failure.message).toBe("migration 0001_only failed");
+    expect(failure.cause).toBe(beginFailure);
+    expect(runs).toEqual([]);
+    expect(messages).toEqual(["applying migration 0001_only"]);
+    expect(await recordedIds()).toEqual([]);
+    expect(await advisoryLocksHeld(tdb.db)).toBe(0);
+  });
+
+  test("unlock rejected after a clean run: that rejection is the outcome, not swallowed", async () => {
+    const runs: string[] = [];
+    const migration = statementMigration("0001_only", "CREATE TABLE only_things (n integer)", runs);
+    const unlockFailure = new Error("connection lost on unlock");
+    const failingUnlock = observed(tdb.db, (sql) => {
+      if (/pg_advisory_unlock/i.test(sql)) {
+        throw unlockFailure;
+      }
+    });
+
+    await expect(migrate(failingUnlock, [migration])).rejects.toBe(unlockFailure);
+
+    // The migration itself went through: applied and recorded.
+    expect(await recordedIds()).toEqual(["0001_only"]);
+  });
+});
+
 describe("concurrent starts", () => {
   test("holds one advisory lock during every migration and releases it after the run", async () => {
     const heldDuringRun: number[] = [];
@@ -358,6 +473,25 @@ describe("migration list validation", () => {
       const outcome = migrate(spy, [{ id, run: noop }]);
       await expect(outcome).rejects.toBeInstanceOf(InvalidMigrationIdError);
       await expect(outcome).rejects.toThrow(`a ${id.length}-char value`);
+    }
+    expect(statements).toEqual([]);
+  });
+
+  test("refuses an identifier that is not a string before any SQL is sent, without echoing it", async () => {
+    // A list built from data by an untyped caller: `undefined`, `null` and a
+    // number all read as a well-formed identifier once coerced to text.
+    const statements: string[] = [];
+    const spy = observed(tdb.db, (sql) => {
+      statements.push(sql);
+    });
+    const noop = async (): Promise<void> => {};
+
+    for (const id of [undefined, null, 42, { toString: () => "0001_forged" }]) {
+      const outcome = migrate(spy, [{ id: id as unknown as string, run: noop }]);
+      await expect(outcome).rejects.toBeInstanceOf(InvalidMigrationIdError);
+      await expect(outcome).rejects.toThrow(
+        `malformed migration identifier (a ${typeof id} value)`,
+      );
     }
     expect(statements).toEqual([]);
   });
