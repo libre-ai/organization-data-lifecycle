@@ -44,24 +44,59 @@ function hasSpaceOrControlCharacter(text: string): boolean {
 }
 
 /**
+ * Query parameters that say where, or as whom, to connect. Measured on the
+ * local runtime: the driver reads `host` (any case, percent-decoded), `port`,
+ * `path`, `socket`, `dbname` and `user` from the query string OVER the
+ * authority, so `?host=` alone retargets a checked URI. The rest of the list
+ * is the same class under the names libpq or other drivers read (`hostaddr`,
+ * `unix`, ...). The authority is the only place a target is written.
+ */
+const RETARGETING_QUERY_PARAMETERS: ReadonlySet<string> = new Set([
+  "host",
+  "hostaddr",
+  "hostname",
+  "path",
+  "socket",
+  "unix",
+  "port",
+  "dbname",
+  "database",
+  "db",
+  "user",
+  "username",
+  "password",
+]);
+
+function hasRetargetingQueryParameter(parsed: URL): boolean {
+  for (const key of parsed.searchParams.keys()) {
+    if (RETARGETING_QUERY_PARAMETERS.has(key.trim().toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * With the engine pinned, the driver dials whatever host it reads in the
  * string (a bare `one.db` is a host name to it), and its default host when
  * the string names none. The string is therefore checked as written, not as
- * a parser would repair it, and must name a host.
+ * a parser would repair it, must name a host, and must not name another
+ * target in its query string.
  */
 function parsePostgresUri(uri: string): URL {
   if (!POSTGRES_URI_PREFIX.test(uri) || hasSpaceOrControlCharacter(uri) || !URL.canParse(uri)) {
     throw new InvalidDatabaseUriError();
   }
   const parsed = new URL(uri);
-  if (parsed.hostname === "") {
+  if (parsed.hostname === "" || hasRetargetingQueryParameter(parsed)) {
     throw new InvalidDatabaseUriError();
   }
   return parsed;
 }
 
 export function createClient(uri: string): SQL {
-  // The driver receives the parsed URL: what was checked is what is dialed.
+  // The driver receives the parsed URL, whose authority is the only target it
+  // carries once retargeting query parameters are refused.
   return new SQL(parsePostgresUri(uri), { ...CLIENT_DEFAULTS });
 }
 

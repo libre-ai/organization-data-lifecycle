@@ -148,6 +148,55 @@ describe("createClient", () => {
       expect((caught as InvalidDatabaseUriError).message).not.toContain(marker);
     }
   });
+
+  test("refuses a query parameter that would retarget the connection, without echoing it", () => {
+    // Measured on the local runtime: the driver reads `host` (any case,
+    // percent-decoded), `port`, `path`, `socket`, `dbname` and `user` from the
+    // query string over the authority. `hostaddr` is a libpq parameter, refused
+    // all the same. The query string never says where to connect.
+    const marker = "not-to-be-echoed";
+    const base = `postgres://app:${marker}@db-one.invalid:5432/one`;
+    const retargeting = [
+      "host=evil.example",
+      "HOST=evil.example",
+      "Host=evil.example",
+      "ho%73t=evil.example",
+      "sslmode=require&host=evil.example",
+      "hostaddr=10.0.0.1",
+      "hostname=evil.example",
+      "path=/tmp/x",
+      "Path=/tmp/x",
+      "socket=/tmp/x",
+      "unix=/tmp/x",
+      "port=1",
+      "dbname=other",
+      "database=other",
+      "db=other",
+      "user=other",
+      "username=other",
+      "password=other",
+    ];
+    for (const query of retargeting) {
+      let caught: unknown;
+      try {
+        createClient(`${base}?${query}`);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(InvalidDatabaseUriError);
+      expect((caught as InvalidDatabaseUriError).message).not.toContain(marker);
+    }
+  });
+
+  test("keeps a query parameter that does not retarget the connection", async () => {
+    const client = createClient("postgres://db-one.invalid:5432/one?sslmode=require");
+    try {
+      expect(client.options.hostname).toBe("db-one.invalid");
+      expect(client.options.port).toBe(5432);
+    } finally {
+      await client.close();
+    }
+  });
 });
 
 interface Call {

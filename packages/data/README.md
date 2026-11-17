@@ -75,17 +75,27 @@ PostgreSQL semantics:
   too); called while a tenant context is active, it throws
   `OpenTenantTransactionError` before any SQL. No query function is provided, and
   purging expired events is left to the adopting product's retention path;
-- `adapters/migration-runner` — `migrate(session, [{ id, run }], journal?)`
+- `adapters/migration-runner` — `migrate(session, [{ id, run, content }], journal?)`
   applies, in list order, the migrations not yet recorded in
-  `schema_migrations`; each migration and its record share one transaction, and
-  a session advisory lock is held for the whole run. A failure stops the run
+  `public.schema_migrations`; each migration and its record share one
+  transaction, and a session advisory lock is held for the whole run. `content`
+  (the migration's SQL) is mandatory: a migration without it, with a blank one
+  or with a non-text one is refused with `InvalidMigrationContentError` before
+  any SQL. Its SHA-256 is recorded, and a start whose content differs from the
+  recorded one stops with `MigrationChangedError` before anything runs, so an
+  applied migration cannot be edited unseen. A tracking table written before the `checksum` column gains it at the
+  next start, its rows taking the current checksum. Session settings a
+  migration leaves behind (`SET search_path`, `SET ROLE`) are reset (`RESET
+  ALL`, `RESET ROLE`) before each migration and at the end. A failure stops the run
   with `MigrationFailedError`, which names the migration and keeps the driver
   error on `cause`, including when the session is lost midway. It needs one
   dedicated session, never a pool;
 - `adapters/database-client` — `createClient(uri)` builds a new pool per call on
   the runtime's native SQL client (5 connections, 20 s idle, 5 s to connect; no
   shared instance) and refuses anything but a `postgres://` or `postgresql://`
-  URI naming a host. `withDedicatedSession(pool, fn)` lends one connection as a
+  URI naming a host, and one whose query string names another target (`host`,
+  `hostaddr`, `path`, `socket`, `port`, `dbname`, `user`, ...: the driver reads
+  them over the authority). `withDedicatedSession(pool, fn)` lends one connection as a
   `SqlExecutor`, resets it with `clearPooledSession` before its return, and
   closes it instead when the reset fails. **Limit: neither is qualified against
   a real PostgreSQL yet** — the runner is tested on PGlite, the factory and the

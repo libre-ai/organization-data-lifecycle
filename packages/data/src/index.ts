@@ -35,8 +35,10 @@ export {
 } from "./adapters/expired-selection-query";
 export {
   DuplicateMigrationIdError,
+  InvalidMigrationContentError,
   InvalidMigrationIdError,
   type Migration,
+  MigrationChangedError,
   MigrationFailedError,
   type MigrationJournal,
   migrate,
