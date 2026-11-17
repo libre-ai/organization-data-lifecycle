@@ -31,6 +31,7 @@ export {
   DuplicateMigrationIdError,
   InvalidMigrationIdError,
   type Migration,
+  MigrationChangedError,
   MigrationFailedError,
   type MigrationJournal,
   migrate,

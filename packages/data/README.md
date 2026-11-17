@@ -59,17 +59,26 @@ PostgreSQL semantics:
   cache purge (a cache failure can never restore access), then one tenant
   transaction deleting the rows, enqueueing blob deletion and persisting the
   contract-valid receipt;
-- `adapters/migration-runner` — `migrate(session, [{ id, run }], journal?)`
+- `adapters/migration-runner` — `migrate(session, [{ id, run, content? }], journal?)`
   applies, in list order, the migrations not yet recorded in
-  `schema_migrations`; each migration and its record share one transaction, and
-  a session advisory lock is held for the whole run. A failure stops the run
+  `public.schema_migrations`; each migration and its record share one
+  transaction, and a session advisory lock is held for the whole run. The
+  SHA-256 of a declared `content` (the migration's SQL) is recorded, and a start
+  whose content differs from the recorded one stops with
+  `MigrationChangedError` before anything runs; without `content`, an edit goes
+  unseen. A tracking table written before the `checksum` column gains it at the
+  next start, its rows taking the current checksum. Session settings a
+  migration leaves behind (`SET search_path`, `SET ROLE`) are reset (`RESET
+  ALL`, `RESET ROLE`) before each migration and at the end. A failure stops the run
   with `MigrationFailedError`, which names the migration and keeps the driver
   error on `cause`, including when the session is lost midway. It needs one
   dedicated session, never a pool;
 - `adapters/database-client` — `createClient(uri)` builds a new pool per call on
   the runtime's native SQL client (5 connections, 20 s idle, 5 s to connect; no
   shared instance) and refuses anything but a `postgres://` or `postgresql://`
-  URI naming a host. `withDedicatedSession(pool, fn)` lends one connection as a
+  URI naming a host, and one whose query string names another target (`host`,
+  `hostaddr`, `path`, `socket`, `port`, `dbname`, `user`, ...: the driver reads
+  them over the authority). `withDedicatedSession(pool, fn)` lends one connection as a
   `SqlExecutor`, resets it with `clearPooledSession` before its return, and
   closes it instead when the reset fails. **Limit: neither is qualified against
   a real PostgreSQL yet** — the runner is tested on PGlite, the factory and the

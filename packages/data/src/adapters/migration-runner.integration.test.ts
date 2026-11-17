@@ -5,6 +5,7 @@ import {
   DuplicateMigrationIdError,
   InvalidMigrationIdError,
   type Migration,
+  MigrationChangedError,
   MigrationFailedError,
   migrate,
 } from "./migration-runner";
@@ -31,6 +32,11 @@ beforeAll(async () => {
 // One engine for the file (PGlite start-up is the slow part), a blank
 // database per test: no table, no record and no lock survives a test.
 beforeEach(async () => {
+  // A hostile migration of an earlier test may have left session settings,
+  // a role or a schema of its own behind; the clean-up does not rely on the
+  // runner it is testing.
+  await tdb.db.exec("RESET ALL; RESET ROLE;");
+  await tdb.db.exec("DROP SCHEMA IF EXISTS app CASCADE;");
   await tdb.db.exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
   await tdb.db.exec("SELECT pg_advisory_unlock_all()");
 });
@@ -68,7 +74,9 @@ function observed(
 }
 
 async function recordedIds(): Promise<string[]> {
-  const res = await tdb.db.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id");
+  const res = await tdb.db.query<{ id: string }>(
+    "SELECT id FROM public.schema_migrations ORDER BY id",
+  );
   return res.rows.map((row) => row.id);
 }
 
@@ -157,10 +165,12 @@ describe("applying pending migrations", () => {
 
     const columns = await tdb.db.query<{ column_name: string; data_type: string }>(
       `SELECT column_name, data_type FROM information_schema.columns
-       WHERE table_name = 'schema_migrations' ORDER BY column_name`,
+       WHERE table_schema = 'public' AND table_name = 'schema_migrations'
+       ORDER BY column_name`,
     );
     expect(columns.rows).toEqual([
       { column_name: "applied_at", data_type: "timestamp with time zone" },
+      { column_name: "checksum", data_type: "text" },
       { column_name: "id", data_type: "text" },
     ]);
     const primaryKey = await tdb.db.query<{ column_name: string }>(
@@ -169,9 +179,9 @@ describe("applying pending migrations", () => {
        WHERE tc.table_name = 'schema_migrations' AND tc.constraint_type = 'PRIMARY KEY'`,
     );
     expect(primaryKey.rows).toEqual([{ column_name: "id" }]);
-    expect(statements.some((sql) => /^\s*SELECT\s+id\s+FROM\s+schema_migrations/i.test(sql))).toBe(
-      true,
-    );
+    expect(
+      statements.some((sql) => /^\s*SELECT\s+id\b.*\bFROM\s+public\.schema_migrations/i.test(sql)),
+    ).toBe(true);
     expect(statements.some((sql) => /INSERT/i.test(sql))).toBe(false);
     expect(await recordedIds()).toEqual([]);
   });
@@ -270,7 +280,7 @@ describe("a failing migration", () => {
     const runs: string[] = [];
     const migration = statementMigration("0001_only", "CREATE TABLE only_things (n integer)", runs);
     const crashingOnRecord = observed(tdb.db, (sql) => {
-      if (/INSERT\s+INTO\s+schema_migrations/i.test(sql)) {
+      if (/INSERT\s+INTO\s+public\.schema_migrations/i.test(sql)) {
         throw new Error("connection lost");
       }
     });
@@ -294,13 +304,13 @@ describe("a failing migration whose clean-up fails too", () => {
   // rejects, and so does everything sent after it. The contract does not
   // bend: the run rejects naming the migration, driver text out of the message.
 
-  test("session lost while recording: ROLLBACK and unlock reject, the migration is still named", async () => {
+  test("session lost while recording: ROLLBACK, reset and unlock reject, the migration is still named", async () => {
     const runs: string[] = [];
     const migration = statementMigration("0001_only", "CREATE TABLE only_things (n integer)", runs);
     const driverErrors: Error[] = [];
     let lost = false;
     const lostSession = observed(tdb.db, (sql) => {
-      if (/INSERT\s+INTO\s+schema_migrations/i.test(sql)) {
+      if (/INSERT\s+INTO\s+public\.schema_migrations/i.test(sql)) {
         lost = true;
       }
       if (lost) {
@@ -324,8 +334,9 @@ describe("a failing migration whose clean-up fails too", () => {
     const failure = caught as MigrationFailedError;
     expect(failure.message).toBe("migration 0001_only failed");
     expect(failure.migrationId).toBe("0001_only");
-    // The first rejection is the cause; ROLLBACK and unlock were both attempted.
-    expect(driverErrors).toHaveLength(3);
+    // The first rejection is the cause; ROLLBACK, the session reset (stopped
+    // at its first statement) and the unlock were all attempted.
+    expect(driverErrors).toHaveLength(4);
     expect(failure.cause).toBe(driverErrors[0]);
   });
 
@@ -401,6 +412,189 @@ describe("a failing migration whose clean-up fails too", () => {
 
     // The migration itself went through: applied and recorded.
     expect(await recordedIds()).toEqual(["0001_only"]);
+  });
+});
+
+describe("session state left by a migration", () => {
+  // A non-LOCAL SET survives the COMMIT of the migration that issued it. The
+  // expected search_path is the session's own before the run, not a literal:
+  // the server's configured default is not the documented one everywhere.
+  async function searchPath(executor: SqlExecutor): Promise<string> {
+    const res = await executor.query<{ search_path: string }>("SHOW search_path");
+    return res.rows[0]?.search_path ?? "";
+  }
+
+  test("a search_path set by a migration redirects neither the record nor the next start", async () => {
+    const DEFAULT_SEARCH_PATH = await searchPath(tdb.db);
+    expect(DEFAULT_SEARCH_PATH).not.toContain("app");
+    const runs: string[] = [];
+    const seenByNext: string[] = [];
+    // The reviewer's probe: a schema with a table of the same name, then the
+    // search_path pointed at it.
+    const hijacker: Migration = {
+      id: "0001_app_schema",
+      run: async (session) => {
+        runs.push("0001_app_schema");
+        await session.exec(
+          `CREATE SCHEMA app;
+           CREATE TABLE app.schema_migrations (
+             id text PRIMARY KEY,
+             applied_at timestamptz NOT NULL DEFAULT now(),
+             checksum text
+           );
+           SET search_path TO app, public;`,
+        );
+      },
+    };
+    const next: Migration = {
+      id: "0002_next",
+      run: async (session) => {
+        runs.push("0002_next");
+        seenByNext.push(await searchPath(session));
+      },
+    };
+
+    await migrate(tdb.db, [hijacker, next]);
+    const leftBehind = await searchPath(tdb.db);
+    // Next start: a fresh session, default settings.
+    await tdb.db.exec("RESET ALL");
+    await migrate(tdb.db, [hijacker, next]);
+
+    expect(leftBehind).toBe(DEFAULT_SEARCH_PATH);
+    expect(runs).toEqual(["0001_app_schema", "0002_next"]);
+    expect(seenByNext).toEqual([DEFAULT_SEARCH_PATH]);
+    expect(await recordedIds()).toEqual(["0001_app_schema", "0002_next"]);
+    const elsewhere = await tdb.db.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM app.schema_migrations",
+    );
+    expect(elsewhere.rows[0]?.n).toBe(0);
+    // The session is handed back as the run found it.
+    expect(await searchPath(tdb.db)).toBe(DEFAULT_SEARCH_PATH);
+  });
+
+  test("a role set by a migration does not reach the next migration nor the session", async () => {
+    await tdb.db.exec(
+      `DO $$ BEGIN
+         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'migration_probe_role') THEN
+           CREATE ROLE migration_probe_role SUPERUSER;
+         END IF;
+       END $$;`,
+    );
+    const before = await tdb.db.query<{ who: string }>("SELECT current_user AS who");
+    const sessionUser = before.rows[0]?.who;
+    const seenByNext: string[] = [];
+    const roleSetter: Migration = {
+      id: "0001_role",
+      run: async (session) => {
+        await session.exec("SET ROLE migration_probe_role");
+      },
+    };
+    const next: Migration = {
+      id: "0002_next",
+      run: async (session) => {
+        const res = await session.query<{ who: string }>("SELECT current_user AS who");
+        seenByNext.push(res.rows[0]?.who ?? "");
+      },
+    };
+
+    await migrate(tdb.db, [roleSetter, next]);
+
+    expect(sessionUser).not.toBe("migration_probe_role");
+    expect(seenByNext).toEqual([sessionUser ?? ""]);
+    const after = await tdb.db.query<{ who: string }>("SELECT current_user AS who");
+    expect(after.rows[0]?.who).toBe(sessionUser);
+  });
+});
+
+describe("a migration changed after it was applied", () => {
+  /** Declares its SQL as content and applies exactly that. */
+  function declaredMigration(id: string, sql: string, runs: string[]): Migration {
+    return {
+      id,
+      content: sql,
+      run: async (session) => {
+        runs.push(id);
+        await session.exec(sql);
+      },
+    };
+  }
+
+  test("is refused at start, naming it, before any pending migration runs", async () => {
+    const runs: string[] = [];
+    await migrate(tdb.db, [declaredMigration("0001_first", "CREATE TABLE t1 (n integer)", runs)]);
+    runs.length = 0;
+
+    const edited = declaredMigration("0001_first", "CREATE TABLE t1 (n bigint)", runs);
+    const pending = declaredMigration("0002_second", "CREATE TABLE t2 (n integer)", runs);
+    const outcome = migrate(tdb.db, [edited, pending]);
+
+    await expect(outcome).rejects.toBeInstanceOf(MigrationChangedError);
+    await expect(outcome).rejects.toThrow("0001_first");
+    expect(runs).toEqual([]);
+    expect(await recordedIds()).toEqual(["0001_first"]);
+    expect(await tableExists("t2")).toBe(false);
+    expect(await advisoryLocksHeld(tdb.db)).toBe(0);
+  });
+
+  test("an unchanged content replays nothing", async () => {
+    const runs: string[] = [];
+    const list = [
+      declaredMigration("0001_first", "CREATE TABLE t1 (n integer)", runs),
+      declaredMigration("0002_second", "CREATE TABLE t2 (n integer)", runs),
+    ];
+    await migrate(tdb.db, list);
+    runs.length = 0;
+
+    await migrate(tdb.db, list);
+
+    expect(runs).toEqual([]);
+  });
+
+  test("a migration that stops declaring the content it was applied with is refused", async () => {
+    const runs: string[] = [];
+    await migrate(tdb.db, [declaredMigration("0001_first", "CREATE TABLE t1 (n integer)", runs)]);
+
+    const undeclared = statementMigration("0001_first", "CREATE TABLE t1 (n integer)", runs);
+    await expect(migrate(tdb.db, [undeclared])).rejects.toBeInstanceOf(MigrationChangedError);
+  });
+
+  test("a content that is not a text is refused before any SQL is sent", async () => {
+    const statements: string[] = [];
+    const spy = observed(tdb.db, (sql) => {
+      statements.push(sql);
+    });
+    const noop = async (): Promise<void> => {};
+
+    const outcome = migrate(spy, [
+      { id: "0001_first", content: 42 as unknown as string, run: noop },
+    ]);
+
+    await expect(outcome).rejects.toBeInstanceOf(TypeError);
+    expect(statements).toEqual([]);
+  });
+
+  test("a tracking table written before the checksum column keeps working, then guards", async () => {
+    // The shape this runner wrote before it recorded a checksum.
+    await tdb.db.exec(
+      `CREATE TABLE public.schema_migrations (
+         id text PRIMARY KEY,
+         applied_at timestamptz NOT NULL DEFAULT now()
+       );
+       INSERT INTO public.schema_migrations (id) VALUES ('0001_first');
+       CREATE TABLE t1 (n integer);`,
+    );
+    const runs: string[] = [];
+    const first = declaredMigration("0001_first", "CREATE TABLE t1 (n integer)", runs);
+    const second = declaredMigration("0002_second", "CREATE TABLE t2 (n integer)", runs);
+
+    await migrate(tdb.db, [first, second]);
+
+    expect(runs).toEqual(["0002_second"]);
+    expect(await recordedIds()).toEqual(["0001_first", "0002_second"]);
+    // The row written without a checksum gets the current one: from now on,
+    // an edit of 0001 is seen.
+    const edited = declaredMigration("0001_first", "CREATE TABLE t1 (n bigint)", runs);
+    await expect(migrate(tdb.db, [edited, second])).rejects.toBeInstanceOf(MigrationChangedError);
   });
 });
 

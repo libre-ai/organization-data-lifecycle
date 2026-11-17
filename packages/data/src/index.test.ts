@@ -12,6 +12,7 @@ describe("package entry", () => {
     const exposed: Record<string, unknown> = entry;
     expect(exposed.migrate).toBe(migrationRunner.migrate);
     expect(exposed.MigrationFailedError).toBe(migrationRunner.MigrationFailedError);
+    expect(exposed.MigrationChangedError).toBe(migrationRunner.MigrationChangedError);
     expect(exposed.InvalidMigrationIdError).toBe(migrationRunner.InvalidMigrationIdError);
     expect(exposed.DuplicateMigrationIdError).toBe(migrationRunner.DuplicateMigrationIdError);
   });
