@@ -36,10 +36,12 @@ export interface Migration {
    * The text this migration applies, typically its SQL. Its SHA-256 is
    * recorded with the identifier, and a start whose content no longer matches
    * the recorded one is refused (`MigrationChangedError`): an applied
-   * migration is never edited, a new one is appended. Optional because `run`
-   * is code the runner cannot read; without it, an edit goes unseen.
+   * migration is never edited, a new one is appended. Mandatory: `run` is code
+   * the runner cannot read, so without a content an edit would go unseen. A
+   * missing or blank content is refused before any SQL
+   * (`InvalidMigrationContentError`).
    */
-  readonly content?: string;
+  readonly content: string;
 }
 
 export type MigrationJournal = (message: string) => void;
@@ -51,6 +53,26 @@ export class InvalidMigrationIdError extends Error {
     const shape = typeof id === "string" ? `a ${id.length}-char value` : `a ${typeof id} value`;
     super(`malformed migration identifier (${shape})`);
     this.name = "InvalidMigrationIdError";
+  }
+}
+
+/**
+ * A migration declares no content, a blank one, or one that is not a text.
+ * Content is what lets a start see that an applied migration was edited, so
+ * a migration without it is refused before any SQL. A TypeError: the shape of
+ * the value is wrong. The content is not echoed.
+ */
+export class InvalidMigrationContentError extends TypeError {
+  readonly migrationId: string;
+
+  constructor(migrationId: string, reason: "missing" | "not-text") {
+    super(
+      reason === "missing"
+        ? `migration ${migrationId} declares no content`
+        : `migration ${migrationId} declares a content that is not a text`,
+    );
+    this.name = "InvalidMigrationContentError";
+    this.migrationId = migrationId;
   }
 }
 
@@ -104,10 +126,8 @@ interface AppliedRow {
   readonly checksum: string | null;
 }
 
-function checksumOf(migration: Migration): string | null {
-  return migration.content === undefined
-    ? null
-    : createHash("sha256").update(migration.content, "utf8").digest("hex");
+function checksumOf(migration: Migration): string {
+  return createHash("sha256").update(migration.content, "utf8").digest("hex");
 }
 
 export async function migrate(
@@ -126,9 +146,16 @@ export async function migrate(
     if (listed.has(id)) {
       throw new DuplicateMigrationIdError(id);
     }
+    // Checked at run time too: an untyped caller can still omit it.
     const content: unknown = migration.content;
-    if (content !== undefined && typeof content !== "string") {
-      throw new TypeError(`migration ${id} declares a content that is not a text`);
+    if (content === undefined || content === null) {
+      throw new InvalidMigrationContentError(id, "missing");
+    }
+    if (typeof content !== "string") {
+      throw new InvalidMigrationContentError(id, "not-text");
+    }
+    if (content.trim() === "") {
+      throw new InvalidMigrationContentError(id, "missing");
     }
     listed.add(id);
   }
@@ -199,11 +226,9 @@ async function applyPending(
     const recordedChecksum = applied.get(migration.id) ?? null;
     const checksum = checksumOf(migration);
     if (recordedChecksum === null) {
-      // Applied before a checksum was recorded, or without declared content:
-      // nothing to compare with. The current one is recorded from now on.
-      if (checksum !== null) {
-        backfill.push({ id: migration.id, checksum });
-      }
+      // Applied before a checksum was recorded: nothing to compare with. The
+      // current one is recorded from now on.
+      backfill.push({ id: migration.id, checksum });
     } else if (checksum !== recordedChecksum) {
       throw new MigrationChangedError(migration.id);
     }

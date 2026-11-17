@@ -3,6 +3,7 @@ import { createTestDatabase, type TestDatabase } from "@libre-ai/testing";
 import type { SqlExecutor } from "./executor";
 import {
   DuplicateMigrationIdError,
+  InvalidMigrationContentError,
   InvalidMigrationIdError,
   type Migration,
   MigrationChangedError,
@@ -45,10 +46,14 @@ afterAll(async () => {
   await tdb.close();
 });
 
-/** A migration that issues one statement and records that it ran. */
+/**
+ * A migration that declares its SQL as content, issues exactly that statement
+ * and records that it ran.
+ */
 function statementMigration(id: string, sql: string, runs: string[]): Migration {
   return {
     id,
+    content: sql,
     run: async (session) => {
       runs.push(id);
       await session.exec(sql);
@@ -103,6 +108,7 @@ describe("applying pending migrations", () => {
     const first = statementMigration("zeta", "CREATE TABLE zeta_things (n integer)", runs);
     const second: Migration = {
       id: "alpha",
+      content: "CREATE TABLE alpha_things (n integer)",
       run: async (session) => {
         runs.push("alpha");
         const res = await session.query<{ id: string }>("SELECT id FROM schema_migrations");
@@ -227,6 +233,7 @@ describe("a failing migration", () => {
     const ok = statementMigration("0001_ok", "CREATE TABLE ok_things (n integer)", runs);
     const broken: Migration = {
       id: "0002_broken",
+      content: "CREATE TABLE half_done (n integer)",
       run: async (session) => {
         runs.push("0002_broken");
         await session.exec("CREATE TABLE half_done (n integer)");
@@ -257,6 +264,7 @@ describe("a failing migration", () => {
     const cause = new Error("duplicate key: quoted-row-value");
     const broken: Migration = {
       id: "0001_broken",
+      content: "-- fails on purpose",
       run: async () => {
         throw cause;
       },
@@ -344,6 +352,7 @@ describe("a failing migration whose clean-up fails too", () => {
     const cause = new Error("boom");
     const broken: Migration = {
       id: "0001_broken",
+      content: "-- fails on purpose",
       run: async () => {
         throw cause;
       },
@@ -433,6 +442,7 @@ describe("session state left by a migration", () => {
     // search_path pointed at it.
     const hijacker: Migration = {
       id: "0001_app_schema",
+      content: "CREATE SCHEMA app; CREATE TABLE app.schema_migrations; SET search_path",
       run: async (session) => {
         runs.push("0001_app_schema");
         await session.exec(
@@ -448,6 +458,7 @@ describe("session state left by a migration", () => {
     };
     const next: Migration = {
       id: "0002_next",
+      content: "SHOW search_path",
       run: async (session) => {
         runs.push("0002_next");
         seenByNext.push(await searchPath(session));
@@ -485,12 +496,14 @@ describe("session state left by a migration", () => {
     const seenByNext: string[] = [];
     const roleSetter: Migration = {
       id: "0001_role",
+      content: "SET ROLE migration_probe_role",
       run: async (session) => {
         await session.exec("SET ROLE migration_probe_role");
       },
     };
     const next: Migration = {
       id: "0002_next",
+      content: "SELECT current_user",
       run: async (session) => {
         const res = await session.query<{ who: string }>("SELECT current_user AS who");
         seenByNext.push(res.rows[0]?.who ?? "");
@@ -507,25 +520,13 @@ describe("session state left by a migration", () => {
 });
 
 describe("a migration changed after it was applied", () => {
-  /** Declares its SQL as content and applies exactly that. */
-  function declaredMigration(id: string, sql: string, runs: string[]): Migration {
-    return {
-      id,
-      content: sql,
-      run: async (session) => {
-        runs.push(id);
-        await session.exec(sql);
-      },
-    };
-  }
-
   test("is refused at start, naming it, before any pending migration runs", async () => {
     const runs: string[] = [];
-    await migrate(tdb.db, [declaredMigration("0001_first", "CREATE TABLE t1 (n integer)", runs)]);
+    await migrate(tdb.db, [statementMigration("0001_first", "CREATE TABLE t1 (n integer)", runs)]);
     runs.length = 0;
 
-    const edited = declaredMigration("0001_first", "CREATE TABLE t1 (n bigint)", runs);
-    const pending = declaredMigration("0002_second", "CREATE TABLE t2 (n integer)", runs);
+    const edited = statementMigration("0001_first", "CREATE TABLE t1 (n bigint)", runs);
+    const pending = statementMigration("0002_second", "CREATE TABLE t2 (n integer)", runs);
     const outcome = migrate(tdb.db, [edited, pending]);
 
     await expect(outcome).rejects.toBeInstanceOf(MigrationChangedError);
@@ -539,8 +540,8 @@ describe("a migration changed after it was applied", () => {
   test("an unchanged content replays nothing", async () => {
     const runs: string[] = [];
     const list = [
-      declaredMigration("0001_first", "CREATE TABLE t1 (n integer)", runs),
-      declaredMigration("0002_second", "CREATE TABLE t2 (n integer)", runs),
+      statementMigration("0001_first", "CREATE TABLE t1 (n integer)", runs),
+      statementMigration("0002_second", "CREATE TABLE t2 (n integer)", runs),
     ];
     await migrate(tdb.db, list);
     runs.length = 0;
@@ -550,12 +551,53 @@ describe("a migration changed after it was applied", () => {
     expect(runs).toEqual([]);
   });
 
-  test("a migration that stops declaring the content it was applied with is refused", async () => {
+  test("a migration without content is refused before any SQL is sent, naming it", async () => {
+    // Content is mandatory: without it, an applied migration could be edited
+    // and the start would not see it. Blank text guards nothing either.
+    const statements: string[] = [];
+    const spy = observed(tdb.db, (sql) => {
+      statements.push(sql);
+    });
     const runs: string[] = [];
-    await migrate(tdb.db, [declaredMigration("0001_first", "CREATE TABLE t1 (n integer)", runs)]);
+    const noop = async (): Promise<void> => {
+      runs.push("ran");
+    };
 
-    const undeclared = statementMigration("0001_first", "CREATE TABLE t1 (n integer)", runs);
-    await expect(migrate(tdb.db, [undeclared])).rejects.toBeInstanceOf(MigrationChangedError);
+    for (const content of [undefined, null, "", "   ", "\n\t"]) {
+      const outcome = migrate(spy, [
+        { id: "0001_first", content: content as unknown as string, run: noop },
+      ]);
+      await expect(outcome).rejects.toBeInstanceOf(InvalidMigrationContentError);
+      await expect(outcome).rejects.toThrow("migration 0001_first declares no content");
+    }
+    expect(statements).toEqual([]);
+    expect(runs).toEqual([]);
+    expect(await tableExists("public.schema_migrations")).toBe(false);
+  });
+
+  test("an applied migration listed again without its content is refused before any SQL", async () => {
+    const runs: string[] = [];
+    await migrate(tdb.db, [statementMigration("0001_first", "CREATE TABLE t1 (n integer)", runs)]);
+    const statements: string[] = [];
+    const spy = observed(tdb.db, (sql) => {
+      statements.push(sql);
+    });
+    const undeclared = {
+      id: "0001_first",
+      run: async (session: SqlExecutor): Promise<void> => {
+        await session.exec("CREATE TABLE t1 (n integer)");
+      },
+    } as unknown as Migration;
+
+    await expect(migrate(spy, [undeclared])).rejects.toBeInstanceOf(InvalidMigrationContentError);
+    expect(statements).toEqual([]);
+    expect(await recordedIds()).toEqual(["0001_first"]);
+  });
+
+  test("the type requires content: a literal without it does not compile", () => {
+    // @ts-expect-error -- `content` is mandatory; typecheck fails if it becomes optional again.
+    const undeclared: Migration = { id: "0001_first", run: async () => {} };
+    expect(undeclared.id).toBe("0001_first");
   });
 
   test("a content that is not a text is refused before any SQL is sent", async () => {
@@ -569,6 +611,7 @@ describe("a migration changed after it was applied", () => {
       { id: "0001_first", content: 42 as unknown as string, run: noop },
     ]);
 
+    await expect(outcome).rejects.toBeInstanceOf(InvalidMigrationContentError);
     await expect(outcome).rejects.toBeInstanceOf(TypeError);
     expect(statements).toEqual([]);
   });
@@ -584,8 +627,8 @@ describe("a migration changed after it was applied", () => {
        CREATE TABLE t1 (n integer);`,
     );
     const runs: string[] = [];
-    const first = declaredMigration("0001_first", "CREATE TABLE t1 (n integer)", runs);
-    const second = declaredMigration("0002_second", "CREATE TABLE t2 (n integer)", runs);
+    const first = statementMigration("0001_first", "CREATE TABLE t1 (n integer)", runs);
+    const second = statementMigration("0002_second", "CREATE TABLE t2 (n integer)", runs);
 
     await migrate(tdb.db, [first, second]);
 
@@ -593,7 +636,7 @@ describe("a migration changed after it was applied", () => {
     expect(await recordedIds()).toEqual(["0001_first", "0002_second"]);
     // The row written without a checksum gets the current one: from now on,
     // an edit of 0001 is seen.
-    const edited = declaredMigration("0001_first", "CREATE TABLE t1 (n bigint)", runs);
+    const edited = statementMigration("0001_first", "CREATE TABLE t1 (n bigint)", runs);
     await expect(migrate(tdb.db, [edited, second])).rejects.toBeInstanceOf(MigrationChangedError);
   });
 });
@@ -603,6 +646,7 @@ describe("concurrent starts", () => {
     const heldDuringRun: number[] = [];
     const probe = (id: string): Migration => ({
       id,
+      content: "SELECT count(*) FROM pg_locks",
       run: async (session) => {
         heldDuringRun.push(await advisoryLocksHeld(session));
       },
@@ -617,6 +661,7 @@ describe("concurrent starts", () => {
   test("releases the advisory lock when a migration fails", async () => {
     const broken: Migration = {
       id: "0001_broken",
+      content: "-- fails on purpose",
       run: async () => {
         throw new Error("boom");
       },
@@ -664,7 +709,7 @@ describe("migration list validation", () => {
     const noop = async (): Promise<void> => {};
 
     for (const id of ["", "has space", "line\nbreak", "-leading-dash", "x".repeat(129)]) {
-      const outcome = migrate(spy, [{ id, run: noop }]);
+      const outcome = migrate(spy, [{ id, content: "SELECT 1", run: noop }]);
       await expect(outcome).rejects.toBeInstanceOf(InvalidMigrationIdError);
       await expect(outcome).rejects.toThrow(`a ${id.length}-char value`);
     }
@@ -681,7 +726,9 @@ describe("migration list validation", () => {
     const noop = async (): Promise<void> => {};
 
     for (const id of [undefined, null, 42, { toString: () => "0001_forged" }]) {
-      const outcome = migrate(spy, [{ id: id as unknown as string, run: noop }]);
+      const outcome = migrate(spy, [
+        { id: id as unknown as string, content: "SELECT 1", run: noop },
+      ]);
       await expect(outcome).rejects.toBeInstanceOf(InvalidMigrationIdError);
       await expect(outcome).rejects.toThrow(
         `malformed migration identifier (a ${typeof id} value)`,

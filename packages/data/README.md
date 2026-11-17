@@ -59,14 +59,15 @@ PostgreSQL semantics:
   cache purge (a cache failure can never restore access), then one tenant
   transaction deleting the rows, enqueueing blob deletion and persisting the
   contract-valid receipt;
-- `adapters/migration-runner` — `migrate(session, [{ id, run, content? }], journal?)`
+- `adapters/migration-runner` — `migrate(session, [{ id, run, content }], journal?)`
   applies, in list order, the migrations not yet recorded in
   `public.schema_migrations`; each migration and its record share one
-  transaction, and a session advisory lock is held for the whole run. The
-  SHA-256 of a declared `content` (the migration's SQL) is recorded, and a start
-  whose content differs from the recorded one stops with
-  `MigrationChangedError` before anything runs; without `content`, an edit goes
-  unseen. A tracking table written before the `checksum` column gains it at the
+  transaction, and a session advisory lock is held for the whole run. `content`
+  (the migration's SQL) is mandatory: a migration without it, with a blank one
+  or with a non-text one is refused with `InvalidMigrationContentError` before
+  any SQL. Its SHA-256 is recorded, and a start whose content differs from the
+  recorded one stops with `MigrationChangedError` before anything runs, so an
+  applied migration cannot be edited unseen. A tracking table written before the `checksum` column gains it at the
   next start, its rows taking the current checksum. Session settings a
   migration leaves behind (`SET search_path`, `SET ROLE`) are reset (`RESET
   ALL`, `RESET ROLE`) before each migration and at the end. A failure stops the run

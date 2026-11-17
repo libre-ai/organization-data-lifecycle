@@ -14,6 +14,7 @@ describe("package entry", () => {
     expect(exposed.MigrationFailedError).toBe(migrationRunner.MigrationFailedError);
     expect(exposed.MigrationChangedError).toBe(migrationRunner.MigrationChangedError);
     expect(exposed.InvalidMigrationIdError).toBe(migrationRunner.InvalidMigrationIdError);
+    expect(exposed.InvalidMigrationContentError).toBe(migrationRunner.InvalidMigrationContentError);
     expect(exposed.DuplicateMigrationIdError).toBe(migrationRunner.DuplicateMigrationIdError);
   });
 
@@ -27,7 +28,11 @@ describe("package entry", () => {
 
   test("exposes the types a consumer needs to call them", () => {
     // Checked by the compiler: these imports fail typecheck when one is missing.
-    const migration: entry.Migration = { id: "0001_first", run: async () => {} };
+    const migration: entry.Migration = {
+      id: "0001_first",
+      content: "SELECT 1",
+      run: async () => {},
+    };
     const journal: entry.MigrationJournal = () => {};
     const pool: entry.SessionPool | undefined = undefined;
     const connection: entry.SessionConnection | undefined = undefined;
