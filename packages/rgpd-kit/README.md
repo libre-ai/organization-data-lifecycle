@@ -63,6 +63,41 @@ retention path (DATA-LIFECYCLE §Explicit deletion: "Physical compaction may
 follow, but logical access … removed in the accepted transaction"). Such
 categories declare `erasureScope: "deferred"`.
 
+## Erasure request lifecycle (guarded transitions, retraction window)
+
+`transitionErasureRequest(request, input)` is a pure function: it reads no
+store, no clock, and calls no hook. It admits five moves on the existing
+`REQUEST_STATUSES` and refuses every other pair, a status to itself included,
+with `IllegalRequestTransitionError` (request id and current status only):
+
+| From           | To             | Meaning                                              |
+| -------------- | -------------- | ---------------------------------------------------- |
+| `received`     | `acknowledged` | the controller accepts the request                   |
+| `received`     | `refused`      | refusal or withdrawal — refusal code required        |
+| `acknowledged` | `in-progress`  | erasure starts, only once the retraction window ends |
+| `acknowledged` | `refused`      | withdrawal during the window, or late refusal        |
+| `in-progress`  | `fulfilled`    | erasure completed                                    |
+
+`fulfilled` and `refused` are terminal. A failed erasure has no status: the
+request stays `in-progress`, the product propagates the error and may retry.
+A withdrawal by the data subject is a move to `refused` with an owner-prefixed
+code the product documents. Only `rightType: "erasure"` requests are accepted.
+
+The retraction window is data, not a constant of this package: the move to
+`in-progress` takes `retractionDays` (a whole number, no default) and is
+refused with `RetractionWindowOpenError` while `input.at` precedes
+`computeEarliestErasureAt(receivedAt, retractionDays)`. A negative or
+fractional delay, or one that reaches the request's response deadline, is an
+`InvalidRetractionDelayError`.
+
+What stays with the product, in its own database (hard rule above):
+
+- persist the returned request with an update conditional on
+  `transition.from`; zero rows changed is a conflict, not a success;
+- write one audit row per returned transition in its own append-only table,
+  carrying the subject digest, never the plaintext identifier or free text;
+- keep `retractionDays` in its configuration.
+
 ## Sessions example (first adopter)
 
 - Port implementation: `apps/sessions/src/rgpd/data-subject-rights.ts`

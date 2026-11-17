@@ -64,6 +64,14 @@ PostgreSQL semantics:
   cache purge (a cache failure can never restore access), then one tenant
   transaction deleting the rows, enqueueing blob deletion and persisting the
   contract-valid receipt;
+- `adapters/erasure-table-coverage` — `inspectErasureTableCoverage(executor,
+  { schema, subjectColumn, erasedTables, retainedTables })` reads
+  `information_schema.columns` and returns `examined` (tables carrying the
+  subject column), `undeclared` (carrying it, in neither list) and `missing`
+  (declared, absent from the schema). It throws on an unsafe identifier, on a
+  table in both lists, and when no table carries the column. A product makes
+  it its exhaustiveness test, run with the database owner's executor after its
+  migrations: a role only sees the tables it owns or holds a privilege on;
 - `adapters/audit-event-store` — append-only audit events per product
   database (`audit_events`: forced row security, `SELECT, INSERT` only for the
   application role, nothing for the retention role), in two modes.

@@ -63,6 +63,16 @@ export {
   type RgpdRefusal,
   validateDataSubjectRequest,
 } from "./data-subject-request";
+export {
+  computeEarliestErasureAt,
+  ERASURE_REQUEST_TRANSITIONS,
+  type ErasureTransitionInput,
+  IllegalRequestTransitionError,
+  InvalidRetractionDelayError,
+  type RequestTransition,
+  RetractionWindowOpenError,
+  transitionErasureRequest,
+} from "./erasure-request-lifecycle";
 export type { DataSubjectRightsPort } from "./ports/data-subject-rights";
 export {
   deriveSubjectDigest,
