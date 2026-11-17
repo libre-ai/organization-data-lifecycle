@@ -9,6 +9,14 @@ export {
   InMemoryBlobStore,
 } from "./adapters/blob-store-port";
 export {
+  createClient,
+  InvalidDatabaseUriError,
+  type SessionConnection,
+  type SessionPool,
+  SessionResetFailedError,
+  withDedicatedSession,
+} from "./adapters/database-client";
+export {
   getDeletionReceipt,
   listCompletedSubjectDigests,
   persistDeletionReceipt,
@@ -19,6 +27,16 @@ export {
   selectExpiredRowIds,
   UnsafeTableNameError,
 } from "./adapters/expired-selection-query";
+export {
+  DuplicateMigrationIdError,
+  InvalidMigrationContentError,
+  InvalidMigrationIdError,
+  type Migration,
+  MigrationChangedError,
+  MigrationFailedError,
+  type MigrationJournal,
+  migrate,
+} from "./adapters/migration-runner";
 export {
   InMemoryProjectionCache,
   MissingTtlError,
