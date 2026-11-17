@@ -71,7 +71,9 @@ PostgreSQL semantics:
   `withTenantDbTransaction`, every failure propagates and rolls the traced
   operation back. `recordAuditEventBestEffort(executor, tenantId, input,
   onFailure)` owns its transaction and absorbs a storage failure, reporting it
-  once through the mandatory `onFailure`. No query function is provided, and
+  once through the mandatory `onFailure` (an async one's rejection is absorbed
+  too); called while a tenant context is active, it throws
+  `OpenTenantTransactionError` before any SQL. No query function is provided, and
   purging expired events is left to the adopting product's retention path;
 - `adapters/migration-runner` — `migrate(session, [{ id, run }], journal?)`
   applies, in list order, the migrations not yet recorded in

@@ -59,7 +59,12 @@ const ACTOR_ROLE = /^[a-z][a-z0-9_-]{0,59}$/;
 const RESOURCE = /^[A-Za-z0-9_.:/-]{1,200}$/;
 // ISO 8601 date-time with an explicit zone: a zoneless timestamp would be
 // read in the server's zone and name a different instant on another host.
-const ZONED_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
+// At most 6 fractional digits: timestamptz keeps microseconds and would round
+// anything finer, so the stored instant would differ from the returned event.
+const ZONED_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,6})?)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+/** Largest UTC offset any zone uses (UTC+14:00); PostgreSQL would accept more. */
+const MAX_OFFSET_HOURS = 14;
 
 /** Upper bound of the serialized context, in UTF-8 bytes. */
 const MAX_CONTEXT_BYTES = 4096;
@@ -89,17 +94,65 @@ function requireMember<T extends string>(field: string, value: unknown, members:
   return member;
 }
 
+/**
+ * True when the calendar fields name themselves: they survive a round trip
+ * through a UTC date. Date.parse alone accepts February 30 (rolled into
+ * March) and 24:00 (rolled into the next day), which PostgreSQL refuses or
+ * stores as another instant.
+ */
+function isExactCalendarTime(fields: readonly number[]): boolean {
+  const [year, month, day, hour, minute, second] = fields;
+  if (
+    year === undefined ||
+    month === undefined ||
+    day === undefined ||
+    hour === undefined ||
+    minute === undefined ||
+    second === undefined ||
+    year < 1
+  ) {
+    return false;
+  }
+  // setUTCFullYear, unlike Date.UTC, does not map years 0-99 to 1900-1999.
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, 0);
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day &&
+    date.getUTCHours() === hour &&
+    date.getUTCMinutes() === minute &&
+    date.getUTCSeconds() === second
+  );
+}
+
 function requireTimestamp(value: unknown): string {
   const timestamp = requireMatch("occurredAt", value, ZONED_TIMESTAMP);
-  // The pattern fixes the shape; Date.parse refuses what has the shape but
-  // names no instant (month 13, hour 25).
-  if (Number.isNaN(Date.parse(timestamp))) {
+  const groups = ZONED_TIMESTAMP.exec(timestamp) ?? [];
+  const [, year, month, day, hour, minute, second = "0", offsetHours = "0", offsetMinutes = "0"] =
+    groups;
+  const exact =
+    isExactCalendarTime([year, month, day, hour, minute, second].map(Number)) &&
+    Number(offsetHours) <= MAX_OFFSET_HOURS &&
+    Number(offsetMinutes) <= 59 &&
+    !Number.isNaN(Date.parse(timestamp));
+  if (!exact) {
     throw new InvalidAuditEventError(
       "occurredAt",
       `a ${timestamp.length}-char value does not name an instant`,
     );
   }
   return timestamp;
+}
+
+/**
+ * PostgreSQL jsonb refuses U+0000 and unpaired surrogates (which
+ * JSON.stringify writes as \udXXX escapes): such a string would pass here and
+ * fail, or be altered, at the database.
+ */
+function isStorableText(text: string): boolean {
+  return text.isWellFormed() && !text.includes(String.fromCharCode(0));
 }
 
 function isFlatValue(value: unknown): value is AuditContextValue {
@@ -117,17 +170,26 @@ function requireContext(value: unknown): AuditContext {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new InvalidAuditEventError("context", "the context is not a plain object");
   }
-  const context: Record<string, AuditContextValue> = {};
+  const entries: Array<[string, AuditContextValue]> = [];
   for (const [key, entry] of Object.entries(value)) {
+    // Neither the key nor the value is named in a refusal: both are caller free text.
     if (!isFlatValue(entry)) {
-      // Neither the key nor the value is named: both are caller free text.
       throw new InvalidAuditEventError(
         "context",
         "a context value is not a string, a finite number, a boolean or null",
       );
     }
-    context[key] = entry;
+    if (!isStorableText(key) || (typeof entry === "string" && !isStorableText(entry))) {
+      throw new InvalidAuditEventError(
+        "context",
+        "a context key or value holds a NUL or an unpaired surrogate",
+      );
+    }
+    entries.push([key, entry]);
   }
+  // fromEntries defines own properties: assigning a "__proto__" key would
+  // call the prototype setter instead and drop the entry.
+  const context: Record<string, AuditContextValue> = Object.fromEntries(entries);
   const bytes = new TextEncoder().encode(JSON.stringify(context)).length;
   if (bytes > MAX_CONTEXT_BYTES) {
     throw new InvalidAuditEventError(
