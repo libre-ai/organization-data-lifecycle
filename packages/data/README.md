@@ -70,6 +70,20 @@ PostgreSQL semantics:
   cache purge (a cache failure can never restore access), then one tenant
   transaction deleting the rows, enqueueing blob deletion and persisting the
   contract-valid receipt;
+- `adapters/erasure-table-coverage` — `inspectErasureTableCoverage(executor,
+  { schema, subjectColumn, erasedTables, retainedTables })` reads the system
+  catalog (`pg_attribute`, `pg_class`, `pg_namespace`) and returns `examined`
+  (relations carrying the subject column), `undeclared` (carrying it, in
+  neither list) and `missing` (declared, absent from the schema). Examined
+  kinds: tables, partitioned tables, materialized views, views, foreign
+  tables; partitions are left to their parent. The catalog is read whatever
+  the role's privileges, unlike `information_schema.columns`, which hides
+  materialized views and ungranted tables. It throws on an unsafe identifier,
+  on a table in both lists, and when no table carries the column. A product
+  makes it its exhaustiveness test after its migrations. Table names must
+  match `^[a-z][a-z0-9_]{0,62}$`: a quoted mixed-case table such as
+  `"Shadow"` is reported as undeclared and can never be declared, so the
+  product renames it;
 - `adapters/audit-event-store` — append-only audit events per product
   database (`audit_events`: forced row security, `SELECT, INSERT` only for the
   application role, nothing for the retention role), in two modes.

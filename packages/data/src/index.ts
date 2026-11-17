@@ -39,6 +39,12 @@ export {
   type ReadableBlobStorePort,
   RejectedBlobTenantError,
 } from "./adapters/encrypting-blob-store";
+export {
+  type ErasureTableCoverage,
+  ErasureTableCoverageError,
+  type ErasureTableCoverageOptions,
+  inspectErasureTableCoverage,
+} from "./adapters/erasure-table-coverage";
 export type { SqlExecutor, SqlQueryResult } from "./adapters/executor";
 export {
   type ExpiredSelectionOptions,
