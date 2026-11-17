@@ -6,6 +6,7 @@ import { MissingTenantContextError } from "../tenant-context";
 import {
   type AuditStoreFailure,
   appendAuditEvent,
+  OpenTenantTransactionError,
   recordAuditEventBestEffort,
 } from "./audit-event-store";
 import type { SqlExecutor } from "./executor";
@@ -295,6 +296,31 @@ describe("appendAuditEvent (evidential mode)", () => {
     expect(res.rows).toEqual([{ actor_role: null, resource: null, severity: "info", context: {} }]);
   });
 
+  test("accepted timestamp bounds and a __proto__ context key are stored as given", async () => {
+    const bounds = [
+      "0001-01-01T00:00:00Z",
+      "2024-02-29T10:00:00Z",
+      "2026-11-17T23:59:59.999999Z",
+      "2026-11-17T10:00:00.5-14:00",
+      "2026-11-17T10:00+14:00",
+    ];
+    await withTenantDbTransaction(tdb.db, TENANT_A, async (tx) => {
+      for (const [index, occurredAt] of bounds.entries()) {
+        await appendAuditEvent(tx, {
+          ...eventInput(`evt_${index}`, occurredAt),
+          context: JSON.parse('{"__proto__":"kept"}'),
+        });
+      }
+    });
+    const res = await tdb.db.query<{ exact: boolean; context: string }>(
+      `SELECT occurred_at = ($1::jsonb ->> (substr(event_id, 5)::int))::timestamptz AS exact,
+              context::text AS context
+       FROM audit_events ORDER BY event_id`,
+      [JSON.stringify(bounds)],
+    );
+    expect(res.rows).toEqual(bounds.map(() => ({ exact: true, context: '{"__proto__": "kept"}' })));
+  });
+
   test("a failing append rolls back the business write of the same transaction", async () => {
     await withTenantDbTransaction(tdb.db, TENANT_A, (tx) =>
       appendAuditEvent(tx, eventInput("evt_taken", "2026-11-17T09:00:00Z")),
@@ -405,6 +431,71 @@ describe("recordAuditEventBestEffort (comfort mode)", () => {
     );
     expect(event.id).toBe("evt_1");
     expect(reported).toBe(1);
+  });
+
+  test("inside an open tenant transaction it is refused before any SQL", async () => {
+    // The probe: a comfort call made from A's operation would run its own
+    // BEGIN / SET LOCAL ROLE / COMMIT on the operation's session, commit A's
+    // pending business write, drop the role back to the owner and let the
+    // rest of the operation run outside the barrier.
+    const spy = spyOn(tdb.db);
+    let reported = 0;
+    await expect(
+      withTenantDbTransaction(tdb.db, TENANT_A, async (tx) => {
+        await tx.query("INSERT INTO fixture_requests (tenant_id, id) VALUES ($1, 'req_0001')", [
+          TENANT_A,
+        ]);
+        await expect(
+          recordAuditEventBestEffort(
+            spy.executor,
+            TENANT_B,
+            eventInput("evt_1", "2026-11-17T10:00:00Z"),
+            () => {
+              reported += 1;
+            },
+          ),
+        ).rejects.toBeInstanceOf(OpenTenantTransactionError);
+        // Still inside A's transaction, still as the application role.
+        const who = await tx.query<{ role: string; tenant: string }>(
+          "SELECT current_user AS role, current_setting('app.tenant_id', true) AS tenant",
+        );
+        expect(who.rows).toEqual([{ role: "libre_ai_app", tenant: TENANT_A }]);
+        throw new StorageDownError();
+      }),
+    ).rejects.toBeInstanceOf(StorageDownError);
+    expect(spy.statements).toEqual([]);
+    expect(reported).toBe(0);
+    // A's business write was never committed by the comfort call.
+    expect(await ownerCount("fixture_requests")).toBe(0);
+    expect(await ownerCount("audit_events")).toBe(0);
+  });
+
+  test("an asynchronous onFailure that rejects is absorbed, not left unhandled", async () => {
+    const spy = spyOn(tdb.db, /INSERT INTO audit_events/);
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", listener);
+    try {
+      let reported = 0;
+      const event = await recordAuditEventBestEffort(
+        spy.executor,
+        TENANT_A,
+        eventInput("evt_1", "2026-11-17T10:00:00Z"),
+        async () => {
+          reported += 1;
+          throw new Error("asynchronous reporting is down");
+        },
+      );
+      // Let the rejected promise reach the end of the job queue.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(event.id).toBe("evt_1");
+      expect(reported).toBe(1);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
   });
 
   test("two successful calls leave two lines, in order, for the given tenant only", async () => {

@@ -1,5 +1,5 @@
 import { type AuditEvent, type AuditEventInput, buildAuditEvent } from "../audit-event";
-import { requireTenantContext } from "../tenant-context";
+import { MissingTenantContextError, requireTenantContext } from "../tenant-context";
 import { assertTenantContextId } from "../tenant-id";
 import type { SqlExecutor } from "./executor";
 import { withTenantDbTransaction } from "./tenant-transaction";
@@ -23,6 +23,32 @@ import { withTenantDbTransaction } from "./tenant-transaction";
 export interface AuditStoreFailure {
   readonly action: string;
   readonly errorName: string;
+}
+
+/**
+ * The comfort mode was called while a tenant context is active, i.e. from
+ * inside an operation's tenant transaction. It is refused before any SQL: its
+ * own BEGIN / SET LOCAL ROLE / COMMIT on a shared session would commit the
+ * operation half-way, drop the session back to the owner role and run the
+ * rest of the operation outside the row-security barrier.
+ */
+export class OpenTenantTransactionError extends Error {
+  constructor() {
+    super("the comfort audit mode cannot run inside an open tenant transaction");
+    this.name = "OpenTenantTransactionError";
+  }
+}
+
+function isTenantContextActive(): boolean {
+  try {
+    requireTenantContext();
+    return true;
+  } catch (error) {
+    if (error instanceof MissingTenantContextError) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function insertAuditEvent(tx: SqlExecutor, event: AuditEvent): Promise<void> {
@@ -64,8 +90,10 @@ export async function appendAuditEvent(
 
 /**
  * Comfort mode. Call it outside any open transaction: it opens its own tenant
- * transaction on `executor`. An invalid event or a malformed tenant id is a
- * caller error and throws before any SQL. A storage failure does not reach
+ * transaction on `executor`. An invalid event, a malformed tenant id or an
+ * active tenant context (`OpenTenantTransactionError`) is a caller error and
+ * throws before any SQL. The guard reads the application context only: a
+ * transaction opened by hand, without `withTenantDbTransaction`, is not seen. A storage failure does not reach
  * the caller: `onFailure` is called exactly once with the action and the
  * error's name (never its message, which a driver may fill with row values),
  * and the validated event is returned. An `onFailure` that throws is absorbed
@@ -79,6 +107,9 @@ export async function recordAuditEventBestEffort(
 ): Promise<AuditEvent> {
   const event = buildAuditEvent(input);
   assertTenantContextId(tenantId);
+  if (isTenantContextActive()) {
+    throw new OpenTenantTransactionError();
+  }
   try {
     await withTenantDbTransaction(executor, tenantId, (tx) => insertAuditEvent(tx, event));
   } catch (error) {
@@ -87,7 +118,10 @@ export async function recordAuditEventBestEffort(
       errorName: error instanceof Error ? error.name : "UnknownError",
     };
     try {
-      onFailure(failure);
+      // An async callback is accepted by the `void` signature: its rejection
+      // is absorbed as well, instead of surfacing as an unhandled rejection.
+      const reported: unknown = onFailure(failure);
+      Promise.resolve(reported).catch(() => undefined);
     } catch {
       // Absorbed on purpose: see the function comment.
     }

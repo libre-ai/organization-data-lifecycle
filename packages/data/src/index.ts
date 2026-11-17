@@ -6,6 +6,7 @@ export {
 export {
   type AuditStoreFailure,
   appendAuditEvent,
+  OpenTenantTransactionError,
   recordAuditEventBestEffort,
 } from "./adapters/audit-event-store";
 export {
@@ -46,8 +47,10 @@ export {
 } from "./adapters/expired-selection-query";
 export {
   DuplicateMigrationIdError,
+  InvalidMigrationContentError,
   InvalidMigrationIdError,
   type Migration,
+  MigrationChangedError,
   MigrationFailedError,
   type MigrationJournal,
   migrate,

@@ -4,6 +4,7 @@ import * as databaseClient from "./adapters/database-client";
 import * as migrationRunner from "./adapters/migration-runner";
 import * as auditEvent from "./audit-event";
 import * as entry from "./index";
+import { OpenTenantTransactionError as EntryOpenTenantTransactionError } from "./index";
 
 /**
  * The package exposes a single entry (`exports["."]`): what is not re-exported
@@ -14,7 +15,9 @@ describe("package entry", () => {
     const exposed: Record<string, unknown> = entry;
     expect(exposed.migrate).toBe(migrationRunner.migrate);
     expect(exposed.MigrationFailedError).toBe(migrationRunner.MigrationFailedError);
+    expect(exposed.MigrationChangedError).toBe(migrationRunner.MigrationChangedError);
     expect(exposed.InvalidMigrationIdError).toBe(migrationRunner.InvalidMigrationIdError);
+    expect(exposed.InvalidMigrationContentError).toBe(migrationRunner.InvalidMigrationContentError);
     expect(exposed.DuplicateMigrationIdError).toBe(migrationRunner.DuplicateMigrationIdError);
   });
 
@@ -28,7 +31,11 @@ describe("package entry", () => {
 
   test("exposes the types a consumer needs to call them", () => {
     // Checked by the compiler: these imports fail typecheck when one is missing.
-    const migration: entry.Migration = { id: "0001_first", run: async () => {} };
+    const migration: entry.Migration = {
+      id: "0001_first",
+      content: "SELECT 1",
+      run: async () => {},
+    };
     const journal: entry.MigrationJournal = () => {};
     const pool: entry.SessionPool | undefined = undefined;
     const connection: entry.SessionConnection | undefined = undefined;
@@ -46,6 +53,16 @@ describe("package entry", () => {
     expect(exposed.AUDIT_SEVERITIES).toBe(auditEvent.AUDIT_SEVERITIES);
     expect(exposed.appendAuditEvent).toBe(auditEventStore.appendAuditEvent);
     expect(exposed.recordAuditEventBestEffort).toBe(auditEventStore.recordAuditEventBestEffort);
+  });
+
+  test("exposes the error the comfort mode throws inside an open tenant transaction", () => {
+    // A consumer must be able to match the refusal by class, not only by
+    // `error.name`: the named import fails typecheck when the entry drops it,
+    // and the identity check fails at runtime.
+    expect(EntryOpenTenantTransactionError).toBe(auditEventStore.OpenTenantTransactionError);
+    const refusal = new EntryOpenTenantTransactionError();
+    expect(refusal).toBeInstanceOf(auditEventStore.OpenTenantTransactionError);
+    expect(refusal.name).toBe("OpenTenantTransactionError");
   });
 
   test("exposes the audit types a consumer needs to call them", () => {

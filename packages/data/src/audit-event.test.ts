@@ -69,6 +69,18 @@ describe("refusals", () => {
     ["an occurredAt that is not a timestamp", "occurredAt", "sentinel-not-a-date"],
     ["an occurredAt without a zone", "occurredAt", "2026-11-17T10:00:00"],
     ["an occurredAt that names no instant", "occurredAt", "2026-13-45T25:61:00Z"],
+    // Shape-valid but rejected or altered by PostgreSQL: a date that does not
+    // exist, the 24:00 end-of-day form, a leap second, more than microseconds,
+    // year zero, an offset no zone uses.
+    ["an occurredAt on February 30", "occurredAt", "2026-02-30T10:00:00Z"],
+    ["an occurredAt on February 29 of a common year", "occurredAt", "2026-02-29T10:00:00Z"],
+    ["an occurredAt at 24:00", "occurredAt", "2026-11-17T24:00:00Z"],
+    ["an occurredAt with a leap second", "occurredAt", "2026-12-31T23:59:60Z"],
+    ["an occurredAt with 7 fractional digits", "occurredAt", "2026-11-17T10:00:00.1234567Z"],
+    ["an occurredAt with 9 fractional digits", "occurredAt", "2026-11-17T10:00:00.123456789Z"],
+    ["an occurredAt in year zero", "occurredAt", "0000-01-01T10:00:00Z"],
+    ["an occurredAt with a +15:00 offset", "occurredAt", "2026-11-17T10:00:00+15:00"],
+    ["an occurredAt with a 60-minute offset", "occurredAt", "2026-11-17T10:00:00+01:60"],
     ["a missing id", "id", undefined],
     ["a numeric action", "action", 42],
   ];
@@ -85,6 +97,18 @@ describe("refusals", () => {
       }
     });
   }
+
+  test("occurredAt bounds that PostgreSQL stores exactly are accepted", () => {
+    for (const occurredAt of [
+      "2024-02-29T10:00:00Z",
+      "2026-11-17T23:59:59.999999Z",
+      "2026-11-17T10:00:00.5-14:00",
+      "2026-11-17T10:00+14:00",
+      "0001-01-01T00:00:00Z",
+    ]) {
+      expect(buildAuditEvent({ ...VALID, occurredAt }).occurredAt).toBe(occurredAt);
+    }
+  });
 
   test("an id and an actorId of exactly 120 characters are accepted", () => {
     const event = buildAuditEvent({ ...VALID, id: "i".repeat(120), actorId: "u".repeat(120) });
@@ -159,6 +183,36 @@ describe("context bounds", () => {
 
   test("a non-finite number is refused", () => {
     expect(refusal("context", { ratio: Number.NaN }).field).toBe("context");
+  });
+
+  test("a context key named __proto__ is kept as data, not lost to the prototype", () => {
+    const context = JSON.parse('{"__proto__":"sentinel-proto","step":"review"}');
+    const event = buildAuditEvent({ ...VALID, context });
+    expect(Object.keys(event.context)).toEqual(["__proto__", "step"]);
+    expect(JSON.stringify(event.context)).toBe('{"__proto__":"sentinel-proto","step":"review"}');
+    expect(Object.getPrototypeOf(event.context)).toBe(Object.prototype);
+  });
+
+  // PostgreSQL jsonb refuses U+0000 and unpaired surrogates (JSON.stringify
+  // escapes the latter as \udXXX), in keys as in values.
+  const unstorable: ReadonlyArray<readonly [label: string, context: Record<string, unknown>]> = [
+    ["a NUL in a value", { note: `sentinel${String.fromCharCode(0)}value` }],
+    ["a NUL in a key", { [`sentinel${String.fromCharCode(0)}key`]: "v" }],
+    ["a lone high surrogate in a value", { note: `sentinel${String.fromCharCode(0xd800)}` }],
+    ["a lone low surrogate in a value", { note: `${String.fromCharCode(0xdc00)}sentinel` }],
+    ["a lone surrogate in a key", { [`sentinel${String.fromCharCode(0xdbff)}`]: "v" }],
+  ];
+  for (const [label, context] of unstorable) {
+    test(`a context with ${label} is refused, without echoing it`, () => {
+      const error = refusal("context", context);
+      expect(error.field).toBe("context");
+      expect(error.message).not.toContain("sentinel");
+    });
+  }
+
+  test("a context with a well-formed astral character is accepted", () => {
+    const context = { note: "\u{1F600}" };
+    expect(buildAuditEvent({ ...VALID, context }).context).toEqual(context);
   });
 
   test("a context that is an array or null is refused", () => {
