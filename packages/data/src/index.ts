@@ -6,6 +6,7 @@ export {
 export {
   type AuditStoreFailure,
   appendAuditEvent,
+  OpenTenantTransactionError,
   recordAuditEventBestEffort,
 } from "./adapters/audit-event-store";
 export {
@@ -27,6 +28,18 @@ export {
   persistDeletionReceipt,
 } from "./adapters/deletion-receipt-store";
 export {
+  type BlobMasterKeyPort,
+  type BlobReadResult,
+  type BlobRefusalCode,
+  createEncryptingBlobStore,
+  type EncryptingBlobStore,
+  InMemoryReadableBlobStore,
+  InvalidMasterKeyError,
+  MalformedBlobDigestError,
+  type ReadableBlobStorePort,
+  RejectedBlobTenantError,
+} from "./adapters/encrypting-blob-store";
+export {
   type ErasureTableCoverage,
   ErasureTableCoverageError,
   type ErasureTableCoverageOptions,
@@ -40,8 +53,10 @@ export {
 } from "./adapters/expired-selection-query";
 export {
   DuplicateMigrationIdError,
+  InvalidMigrationContentError,
   InvalidMigrationIdError,
   type Migration,
+  MigrationChangedError,
   MigrationFailedError,
   type MigrationJournal,
   migrate,
