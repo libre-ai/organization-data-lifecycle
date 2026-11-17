@@ -27,6 +27,18 @@ export {
   listCompletedSubjectDigests,
   persistDeletionReceipt,
 } from "./adapters/deletion-receipt-store";
+export {
+  type BlobMasterKeyPort,
+  type BlobReadResult,
+  type BlobRefusalCode,
+  createEncryptingBlobStore,
+  type EncryptingBlobStore,
+  InMemoryReadableBlobStore,
+  InvalidMasterKeyError,
+  MalformedBlobDigestError,
+  type ReadableBlobStorePort,
+  RejectedBlobTenantError,
+} from "./adapters/encrypting-blob-store";
 export type { SqlExecutor, SqlQueryResult } from "./adapters/executor";
 export {
   type ExpiredSelectionOptions,

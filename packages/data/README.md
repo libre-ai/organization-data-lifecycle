@@ -60,6 +60,12 @@ PostgreSQL semantics:
 - `adapters/projection-cache-port` / `blob-store-port` — Redis/Cellar-class
   ports (TTL mandatory, never authority; enqueue-only content-addressed blob
   deletion) with in-memory doubles; real clients arrive with G4 provisioning;
+- `adapters/encrypting-blob-store` — per-tenant encrypting decorator over
+  `BlobStorePort`: versioned AES-256-GCM envelope under an HKDF-SHA-256 data
+  key, tenant and address bound as associated data, and a read with distinct
+  outcomes (`found`, `absent`, `refused` with a stable `blob.*` code, counted);
+  the master key comes through a port, never from the environment. Not yet
+  independently reviewed: no real data before that review;
 - `adapters/active-deletion` — explicit deletion end to end: bounded-retry
   cache purge (a cache failure can never restore access), then one tenant
   transaction deleting the rows, enqueueing blob deletion and persisting the
