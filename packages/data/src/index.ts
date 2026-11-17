@@ -4,6 +4,12 @@ export {
   executeActiveDeletion,
 } from "./adapters/active-deletion";
 export {
+  type AuditStoreFailure,
+  appendAuditEvent,
+  OpenTenantTransactionError,
+  recordAuditEventBestEffort,
+} from "./adapters/audit-event-store";
+export {
   type BlobMetadata,
   type BlobStorePort,
   InMemoryBlobStore,
@@ -53,6 +59,18 @@ export {
   clearPooledSession,
   withTenantDbTransaction,
 } from "./adapters/tenant-transaction";
+export {
+  AUDIT_OUTCOMES,
+  AUDIT_SEVERITIES,
+  type AuditContext,
+  type AuditContextValue,
+  type AuditEvent,
+  type AuditEventInput,
+  type AuditOutcome,
+  type AuditSeverity,
+  buildAuditEvent,
+  InvalidAuditEventError,
+} from "./audit-event";
 export {
   assertWithinBackupCeiling,
   BACKUP_EXPIRY_DAYS,

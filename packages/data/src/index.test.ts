@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import * as auditEventStore from "./adapters/audit-event-store";
 import * as databaseClient from "./adapters/database-client";
 import * as migrationRunner from "./adapters/migration-runner";
+import * as auditEvent from "./audit-event";
 import * as entry from "./index";
+import { OpenTenantTransactionError as EntryOpenTenantTransactionError } from "./index";
 
 /**
  * The package exposes a single entry (`exports["."]`): what is not re-exported
@@ -41,4 +44,109 @@ describe("package entry", () => {
     expect(pool).toBeUndefined();
     expect(connection).toBeUndefined();
   });
+
+  test("exposes the audit event builder, its enumerations and both store modes", () => {
+    const exposed: Record<string, unknown> = entry;
+    expect(exposed.buildAuditEvent).toBe(auditEvent.buildAuditEvent);
+    expect(exposed.InvalidAuditEventError).toBe(auditEvent.InvalidAuditEventError);
+    expect(exposed.AUDIT_OUTCOMES).toBe(auditEvent.AUDIT_OUTCOMES);
+    expect(exposed.AUDIT_SEVERITIES).toBe(auditEvent.AUDIT_SEVERITIES);
+    expect(exposed.appendAuditEvent).toBe(auditEventStore.appendAuditEvent);
+    expect(exposed.recordAuditEventBestEffort).toBe(auditEventStore.recordAuditEventBestEffort);
+  });
+
+  test("exposes the error the comfort mode throws inside an open tenant transaction", () => {
+    // A consumer must be able to match the refusal by class, not only by
+    // `error.name`: the named import fails typecheck when the entry drops it,
+    // and the identity check fails at runtime.
+    expect(EntryOpenTenantTransactionError).toBe(auditEventStore.OpenTenantTransactionError);
+    const refusal = new EntryOpenTenantTransactionError();
+    expect(refusal).toBeInstanceOf(auditEventStore.OpenTenantTransactionError);
+    expect(refusal.name).toBe("OpenTenantTransactionError");
+  });
+
+  test("exposes the audit types a consumer needs to call them", () => {
+    // Checked by the compiler: these annotations fail typecheck when one is missing.
+    const outcome: entry.AuditOutcome = "denied";
+    const severity: entry.AuditSeverity = "warn";
+    const input: entry.AuditEventInput = {
+      id: "evt_0001",
+      action: "request.transition",
+      actorId: "usr_0001",
+      outcome,
+      severity,
+      occurredAt: "2026-11-17T10:00:00Z",
+    };
+    const event: entry.AuditEvent = entry.buildAuditEvent(input);
+    const failure: entry.AuditStoreFailure = { action: event.action, errorName: "Error" };
+    expect(event.severity).toBe("warn");
+    expect(failure.action).toBe("request.transition");
+  });
+
+  test("keeps every value the entry exposed before the audit journal was added", () => {
+    const exposed: Record<string, unknown> = entry;
+    const missing = EXPORTS_BEFORE_AUDIT.filter((name) => exposed[name] === undefined);
+    expect(missing).toEqual([]);
+    expect(EXPORTS_BEFORE_AUDIT).toHaveLength(53);
+  });
 });
+
+/**
+ * The 53 runtime values of the entry as it stood before the audit exports,
+ * listed from that revision: a removal or a rename must redden here.
+ */
+const EXPORTS_BEFORE_AUDIT: readonly string[] = [
+  "AboveMaximumRetentionError",
+  "BACKUP_EXPIRY_DAYS",
+  "BackupCeilingExceededError",
+  "BelowMinimumRetentionError",
+  "CachePurgeFailedError",
+  "CrossTenantAccessError",
+  "DELETION_RECEIPT_SCHEMA",
+  "DuplicateMigrationIdError",
+  "EmptySubjectSetError",
+  "InMemoryBlobStore",
+  "InMemoryProjectionCache",
+  "InvalidDatabaseUriError",
+  "InvalidMigrationIdError",
+  "InvalidStoreOutcomeError",
+  "MalformedTenantIdError",
+  "MigrationFailedError",
+  "MissingTenantContextError",
+  "MissingTtlError",
+  "NonOpaqueDigestError",
+  "NonPositiveRetentionError",
+  "NotConfigurableError",
+  "PUBLIC_SERVICE_TENANT",
+  "PublicTenantRejectedError",
+  "RetentionWindowUnresolvedError",
+  "SessionResetFailedError",
+  "UnknownReceiptStatusError",
+  "UnsafeTableNameError",
+  "assertTenantContextId",
+  "assertWithinBackupCeiling",
+  "backupExpiryCeiling",
+  "buildCompletedDeletionReceipt",
+  "clearPooledSession",
+  "createClient",
+  "executeActiveDeletion",
+  "getDeletionReceipt",
+  "getRetentionRule",
+  "guardTenantRow",
+  "isPrivateTenantId",
+  "listCompletedSubjectDigests",
+  "migrate",
+  "persistDeletionReceipt",
+  "replayDeletionsOnRestore",
+  "requireTenantContext",
+  "resolveConfiguredRetention",
+  "retentionDurationDays",
+  "runInTenantContext",
+  "runRetentionSweep",
+  "selectExpiredIds",
+  "selectExpiredRowIds",
+  "upsertRetentionRule",
+  "withDedicatedSession",
+  "withTenantDbTransaction",
+  "withTenantRetentionTransaction",
+];

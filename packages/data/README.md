@@ -32,6 +32,10 @@ and tested (37 tests, strict TDD):
   the window; a shorter retention schedules already-expired records immediately.
 - `backup-ceiling` — a deletion receipt's backup expiry never exceeds 35 days.
 - `restore-replay` — a completed deletion does not resurrect on restore.
+- `audit-event` — `buildAuditEvent` validates an audit event (opaque
+  identifiers, four outcomes, four severities defaulting to `info`, a flat
+  context of at most 4096 serialized bytes, a caller-supplied zoned timestamp)
+  and returns it frozen; a refusal names the field, never the value.
 
 ## Integration layer (src/adapters + migrations)
 
@@ -41,7 +45,8 @@ of that harness this package now provides, all under strict TDD with real
 PostgreSQL semantics:
 
 - `migrations/` — isolated owner migrations for the platform tables
-  (`retention_rules`, `deletion_receipts`) and the application role;
+  (`retention_rules`, `deletion_receipts`, `audit_events`) and the application
+  role;
 - `adapters/tenant-transaction` — one call binds the application context
   (AsyncLocalStorage) and the database context (`SET LOCAL ROLE` +
   transaction-local `app.tenant_id`) so they cannot drift; `clearPooledSession`
@@ -59,6 +64,17 @@ PostgreSQL semantics:
   cache purge (a cache failure can never restore access), then one tenant
   transaction deleting the rows, enqueueing blob deletion and persisting the
   contract-valid receipt;
+- `adapters/audit-event-store` — append-only audit events per product
+  database (`audit_events`: forced row security, `SELECT, INSERT` only for the
+  application role, nothing for the retention role), in two modes.
+  `appendAuditEvent(tx, input)` is the evidential one: called inside a
+  `withTenantDbTransaction`, every failure propagates and rolls the traced
+  operation back. `recordAuditEventBestEffort(executor, tenantId, input,
+  onFailure)` owns its transaction and absorbs a storage failure, reporting it
+  once through the mandatory `onFailure` (an async one's rejection is absorbed
+  too); called while a tenant context is active, it throws
+  `OpenTenantTransactionError` before any SQL. No query function is provided, and
+  purging expired events is left to the adopting product's retention path;
 - `adapters/migration-runner` — `migrate(session, [{ id, run, content }], journal?)`
   applies, in list order, the migrations not yet recorded in
   `public.schema_migrations`; each migration and its record share one
