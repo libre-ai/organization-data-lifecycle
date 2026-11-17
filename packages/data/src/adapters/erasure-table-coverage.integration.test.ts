@@ -12,12 +12,15 @@ import type { SqlExecutor, SqlQueryResult } from "./executor";
 /**
  * A product's exhaustiveness test in miniature: three fixture tables carry
  * the subject column, two are erased and one is retained on purpose. The
- * retained one has no grant for the application role, which is why the
- * comparison must run with the owner's executor.
+ * fixture is owned by a non-superuser role, as a product database is, and the
+ * retained table has no grant for the application role.
  */
 
 const MIGRATIONS_DIR = join(import.meta.dir, "..", "..", "migrations");
 const SCHEMA = "coverage_fx";
+const KINDS_SCHEMA = "coverage_kinds";
+const OWNER_ROLE = "coverage_owner";
+const APP_ROLE = "libre_ai_app";
 const DECLARED: ErasureTableCoverageOptions = {
   schema: SCHEMA,
   subjectColumn: "subject_digest",
@@ -31,15 +34,42 @@ beforeAll(async () => {
   tdb = await createTestDatabase();
   await tdb.applyMigrations(MIGRATIONS_DIR);
   await tdb.db.exec(`
-    CREATE SCHEMA ${SCHEMA};
+    CREATE ROLE ${OWNER_ROLE} NOLOGIN;
+    CREATE SCHEMA ${SCHEMA} AUTHORIZATION ${OWNER_ROLE};
+    CREATE SCHEMA ${KINDS_SCHEMA} AUTHORIZATION ${OWNER_ROLE};
+    SET ROLE ${OWNER_ROLE};
     CREATE TABLE ${SCHEMA}.fx_messages (subject_digest text NOT NULL, body text NOT NULL);
     CREATE TABLE ${SCHEMA}.fx_profiles (subject_digest text NOT NULL, label text NOT NULL);
     CREATE TABLE ${SCHEMA}.fx_audit_trail (subject_digest text NOT NULL, action text NOT NULL);
     CREATE TABLE ${SCHEMA}.fx_settings (name text NOT NULL);
-    GRANT USAGE ON SCHEMA ${SCHEMA} TO libre_ai_app;
-    GRANT SELECT, INSERT, DELETE ON ${SCHEMA}.fx_messages, ${SCHEMA}.fx_profiles TO libre_ai_app;
+    GRANT USAGE ON SCHEMA ${SCHEMA} TO ${APP_ROLE};
+    GRANT SELECT, INSERT, DELETE ON ${SCHEMA}.fx_messages, ${SCHEMA}.fx_profiles TO ${APP_ROLE};
+
+    -- Every relation kind that can hold a copy of the subject column, plus an
+    -- index and a dropped column that carry the name without holding data.
+    CREATE TABLE ${KINDS_SCHEMA}.base (subject_digest text NOT NULL, body text NOT NULL);
+    CREATE INDEX base_subject_idx ON ${KINDS_SCHEMA}.base (subject_digest);
+    CREATE MATERIALIZED VIEW ${KINDS_SCHEMA}.mv_copy AS
+      SELECT subject_digest, body FROM ${KINDS_SCHEMA}.base;
+    CREATE VIEW ${KINDS_SCHEMA}.v_copy AS SELECT subject_digest FROM ${KINDS_SCHEMA}.base;
+    CREATE TABLE ${KINDS_SCHEMA}.parted (subject_digest text NOT NULL, year int NOT NULL)
+      PARTITION BY LIST (year);
+    CREATE TABLE ${KINDS_SCHEMA}.parted_2026 PARTITION OF ${KINDS_SCHEMA}.parted FOR VALUES IN (2026);
+    CREATE TABLE ${KINDS_SCHEMA}.dropped (subject_digest text, label text NOT NULL);
+    ALTER TABLE ${KINDS_SCHEMA}.dropped DROP COLUMN subject_digest;
+    RESET ROLE;
   `);
 });
+
+/** Runs `fn` with the session switched to `role`; the single PGlite session is restored after. */
+async function asRole<T>(role: string, fn: () => Promise<T>): Promise<T> {
+  await tdb.db.exec(`SET ROLE ${role}`);
+  try {
+    return await fn();
+  } finally {
+    await tdb.db.exec("RESET ROLE");
+  }
+}
 
 afterAll(async () => {
   await tdb.close();
@@ -121,18 +151,91 @@ describe("inspectErasureTableCoverage", () => {
   });
 
   test("the owner's executor examines a table the application role has no grant on", async () => {
+    const owner = await tdb.db.query<{ rolsuper: boolean }>(
+      "SELECT rolsuper FROM pg_roles WHERE rolname = $1",
+      [OWNER_ROLE],
+    );
+    expect(owner.rows).toEqual([{ rolsuper: false }]);
     const grants = await tdb.db.query<{ n: number }>(
       `SELECT count(*)::int AS n FROM information_schema.table_privileges
-       WHERE table_schema = $1 AND table_name = 'fx_audit_trail' AND grantee = 'libre_ai_app'`,
-      [SCHEMA],
+       WHERE table_schema = $1 AND table_name = 'fx_audit_trail' AND grantee = $2`,
+      [SCHEMA, APP_ROLE],
     );
     expect(grants.rows[0]?.n).toBe(0);
 
-    const coverage = await inspectErasureTableCoverage(tdb.db, {
-      ...DECLARED,
-      retainedTables: [],
-    });
+    const coverage = await asRole(OWNER_ROLE, () =>
+      inspectErasureTableCoverage(tdb.db, { ...DECLARED, retainedTables: [] }),
+    );
     expect(coverage).toEqual({ examined: 3, undeclared: ["fx_audit_trail"], missing: [] });
+  });
+
+  test("the application role sees fewer tables through information_schema, all through the catalog", async () => {
+    const viaInformationSchema = (role: string) =>
+      asRole(role, async () => {
+        const res = await tdb.db.query<{ n: number }>(
+          `SELECT count(DISTINCT table_name)::int AS n FROM information_schema.columns
+           WHERE table_schema = $1 AND column_name = $2`,
+          [SCHEMA, DECLARED.subjectColumn],
+        );
+        return res.rows[0]?.n;
+      });
+    expect(await viaInformationSchema(OWNER_ROLE)).toBe(3);
+    expect(await viaInformationSchema(APP_ROLE)).toBe(2);
+
+    const coverage = await asRole(APP_ROLE, () => inspectErasureTableCoverage(tdb.db, DECLARED));
+    expect(coverage).toEqual({ examined: 3, undeclared: [], missing: [] });
+  });
+});
+
+describe("inspectErasureTableCoverage over every relation kind", () => {
+  const KINDS: ErasureTableCoverageOptions = {
+    schema: KINDS_SCHEMA,
+    subjectColumn: "subject_digest",
+    erasedTables: ["base", "parted"],
+    retainedTables: ["v_copy"],
+  };
+
+  test("a materialized view copying the subject column is undeclared", async () => {
+    const coverage = await asRole(OWNER_ROLE, () => inspectErasureTableCoverage(tdb.db, KINDS));
+    expect(coverage.undeclared).toEqual(["mv_copy"]);
+  });
+
+  test("tables, partitioned parents and views are examined; partitions, indexes and dropped columns are not", async () => {
+    const coverage = await asRole(OWNER_ROLE, () =>
+      inspectErasureTableCoverage(tdb.db, {
+        ...KINDS,
+        erasedTables: [...KINDS.erasedTables, "mv_copy"],
+      }),
+    );
+    expect(coverage).toEqual({ examined: 4, undeclared: [], missing: [] });
+  });
+
+  test("a partition declared on its own is missing: erasing through the parent covers it", async () => {
+    const coverage = await asRole(OWNER_ROLE, () =>
+      inspectErasureTableCoverage(tdb.db, {
+        ...KINDS,
+        erasedTables: [...KINDS.erasedTables, "mv_copy", "parted_2026"],
+      }),
+    );
+    expect(coverage.missing).toEqual(["parted_2026"]);
+  });
+
+  test("a quoted mixed-case table is reported undeclared and cannot be declared (README)", async () => {
+    await tdb.db.exec(`
+      CREATE SCHEMA coverage_quoted AUTHORIZATION ${OWNER_ROLE};
+      CREATE TABLE coverage_quoted.plain (subject_digest text NOT NULL);
+      CREATE TABLE coverage_quoted."Shadow" (subject_digest text NOT NULL);
+    `);
+    const quoted: ErasureTableCoverageOptions = {
+      schema: "coverage_quoted",
+      subjectColumn: "subject_digest",
+      erasedTables: ["plain"],
+      retainedTables: [],
+    };
+    expect((await inspectErasureTableCoverage(tdb.db, quoted)).undeclared).toEqual(["Shadow"]);
+    await expect(
+      inspectErasureTableCoverage(tdb.db, { ...quoted, erasedTables: ["plain", "Shadow"] }),
+    ).rejects.toThrow(ErasureTableCoverageError);
   });
 });
 
