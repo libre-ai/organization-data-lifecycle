@@ -6,6 +6,7 @@ export {
 export {
   type AuditStoreFailure,
   appendAuditEvent,
+  OpenTenantTransactionError,
   recordAuditEventBestEffort,
 } from "./adapters/audit-event-store";
 export {
