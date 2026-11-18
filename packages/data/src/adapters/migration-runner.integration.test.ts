@@ -46,17 +46,83 @@ afterAll(async () => {
   await tdb.close();
 });
 
+interface FixtureStatement {
+  readonly content: string;
+  readonly apply: (session: SqlExecutor) => Promise<unknown>;
+}
+
+/**
+ * The closed list of statements the fixtures issue. The text is written twice
+ * so that `exec` only ever receives a literal; the "fixture statements" test
+ * below proves that both copies stay identical.
+ */
+const FIXTURE_STATEMENTS = {
+  zeta_things: {
+    content: "CREATE TABLE zeta_things (n integer)",
+    apply: (session) => session.exec("CREATE TABLE zeta_things (n integer)"),
+  },
+  first_things: {
+    content: "CREATE TABLE first_things (n integer)",
+    apply: (session) => session.exec("CREATE TABLE first_things (n integer)"),
+  },
+  second_things: {
+    content: "CREATE TABLE second_things (n integer)",
+    apply: (session) => session.exec("CREATE TABLE second_things (n integer)"),
+  },
+  third_things: {
+    content: "CREATE TABLE third_things (n integer)",
+    apply: (session) => session.exec("CREATE TABLE third_things (n integer)"),
+  },
+  fourth_things: {
+    content: "CREATE TABLE fourth_things (n integer)",
+    apply: (session) => session.exec("CREATE TABLE fourth_things (n integer)"),
+  },
+  ok_things: {
+    content: "CREATE TABLE ok_things (n integer)",
+    apply: (session) => session.exec("CREATE TABLE ok_things (n integer)"),
+  },
+  never_things: {
+    content: "CREATE TABLE never_things (n integer)",
+    apply: (session) => session.exec("CREATE TABLE never_things (n integer)"),
+  },
+  only_things: {
+    content: "CREATE TABLE only_things (n integer)",
+    apply: (session) => session.exec("CREATE TABLE only_things (n integer)"),
+  },
+  same_things: {
+    content: "CREATE TABLE same_things (n integer)",
+    apply: (session) => session.exec("CREATE TABLE same_things (n integer)"),
+  },
+  t1_integer: {
+    content: "CREATE TABLE t1 (n integer)",
+    apply: (session) => session.exec("CREATE TABLE t1 (n integer)"),
+  },
+  t1_bigint: {
+    content: "CREATE TABLE t1 (n bigint)",
+    apply: (session) => session.exec("CREATE TABLE t1 (n bigint)"),
+  },
+  t2_integer: {
+    content: "CREATE TABLE t2 (n integer)",
+    apply: (session) => session.exec("CREATE TABLE t2 (n integer)"),
+  },
+} satisfies Record<string, FixtureStatement>;
+
 /**
  * A migration that declares its SQL as content, issues exactly that statement
  * and records that it ran.
  */
-function statementMigration(id: string, sql: string, runs: string[]): Migration {
+function statementMigration(
+  id: string,
+  statement: keyof typeof FIXTURE_STATEMENTS,
+  runs: string[],
+): Migration {
+  const { content, apply } = FIXTURE_STATEMENTS[statement];
   return {
     id,
-    content: sql,
+    content,
     run: async (session) => {
       runs.push(id);
-      await session.exec(sql);
+      await apply(session);
     },
   };
 }
@@ -100,12 +166,27 @@ async function advisoryLocksHeld(executor: SqlExecutor): Promise<number> {
   return res.rows[0]?.held ?? -1;
 }
 
+describe("fixture statements", () => {
+  test("each one issues exactly the statement it declares as content", async () => {
+    for (const { content, apply } of Object.values(FIXTURE_STATEMENTS)) {
+      const issued: string[] = [];
+      await apply({
+        query: async <R>() => ({ rows: [] as R[] }),
+        exec: async (sql) => {
+          issued.push(sql);
+        },
+      });
+      expect(issued).toEqual([content]);
+    }
+  });
+});
+
 describe("applying pending migrations", () => {
   test("none applied: both run in list order and are recorded in that order", async () => {
     // List order deliberately differs from lexical order: the list decides.
     const runs: string[] = [];
     const recordedBeforeSecond: string[] = [];
-    const first = statementMigration("zeta", "CREATE TABLE zeta_things (n integer)", runs);
+    const first = statementMigration("zeta", "zeta_things", runs);
     const second: Migration = {
       id: "alpha",
       content: "CREATE TABLE alpha_things (n integer)",
@@ -128,12 +209,8 @@ describe("applying pending migrations", () => {
 
   test("first already applied: only the second runs and is recorded", async () => {
     const runs: string[] = [];
-    const first = statementMigration("0001_first", "CREATE TABLE first_things (n integer)", runs);
-    const second = statementMigration(
-      "0002_second",
-      "CREATE TABLE second_things (n integer)",
-      runs,
-    );
+    const first = statementMigration("0001_first", "first_things", runs);
+    const second = statementMigration("0002_second", "second_things", runs);
     await migrate(tdb.db, [first]);
     expect(runs).toEqual(["0001_first"]);
     runs.length = 0;
@@ -147,8 +224,8 @@ describe("applying pending migrations", () => {
   test("replayable: a second start with the same list runs nothing", async () => {
     const runs: string[] = [];
     const list = [
-      statementMigration("0001_first", "CREATE TABLE first_things (n integer)", runs),
-      statementMigration("0002_second", "CREATE TABLE second_things (n integer)", runs),
+      statementMigration("0001_first", "first_things", runs),
+      statementMigration("0002_second", "second_things", runs),
     ];
     await migrate(tdb.db, list);
     runs.length = 0;
@@ -197,12 +274,8 @@ describe("journal", () => {
   test("receives exactly 'applying' then 'applied' per applied migration", async () => {
     const runs: string[] = [];
     const messages: string[] = [];
-    const first = statementMigration("0001_first", "CREATE TABLE first_things (n integer)", runs);
-    const second = statementMigration(
-      "0002_second",
-      "CREATE TABLE second_things (n integer)",
-      runs,
-    );
+    const first = statementMigration("0001_first", "first_things", runs);
+    const second = statementMigration("0002_second", "second_things", runs);
     await migrate(tdb.db, [first]);
 
     // The already-applied migration is silent: two messages per APPLIED one.
@@ -210,12 +283,8 @@ describe("journal", () => {
     expect(messages).toEqual(["applying migration 0002_second", "0002_second applied"]);
 
     messages.length = 0;
-    const third = statementMigration("0003_third", "CREATE TABLE third_things (n integer)", runs);
-    const fourth = statementMigration(
-      "0004_fourth",
-      "CREATE TABLE fourth_things (n integer)",
-      runs,
-    );
+    const third = statementMigration("0003_third", "third_things", runs);
+    const fourth = statementMigration("0004_fourth", "fourth_things", runs);
     await migrate(tdb.db, [first, second, third, fourth], (message) => messages.push(message));
     expect(messages).toEqual([
       "applying migration 0003_third",
@@ -230,7 +299,7 @@ describe("a failing migration", () => {
   test("rejects naming the migration, records nothing, and stops the run", async () => {
     const runs: string[] = [];
     const messages: string[] = [];
-    const ok = statementMigration("0001_ok", "CREATE TABLE ok_things (n integer)", runs);
+    const ok = statementMigration("0001_ok", "ok_things", runs);
     const broken: Migration = {
       id: "0002_broken",
       content: "CREATE TABLE half_done (n integer)",
@@ -240,7 +309,7 @@ describe("a failing migration", () => {
         throw new Error("boom with a row value");
       },
     };
-    const never = statementMigration("0003_never", "CREATE TABLE never_things (n integer)", runs);
+    const never = statementMigration("0003_never", "never_things", runs);
 
     const outcome = migrate(tdb.db, [ok, broken, never], (message) => messages.push(message));
 
@@ -286,7 +355,7 @@ describe("a failing migration", () => {
 
   test("a crash between a migration and its record leaves neither: the replay succeeds", async () => {
     const runs: string[] = [];
-    const migration = statementMigration("0001_only", "CREATE TABLE only_things (n integer)", runs);
+    const migration = statementMigration("0001_only", "only_things", runs);
     const crashingOnRecord = observed(tdb.db, (sql) => {
       if (/INSERT\s+INTO\s+public\.schema_migrations/i.test(sql)) {
         throw new Error("connection lost");
@@ -314,7 +383,7 @@ describe("a failing migration whose clean-up fails too", () => {
 
   test("session lost while recording: ROLLBACK, reset and unlock reject, the migration is still named", async () => {
     const runs: string[] = [];
-    const migration = statementMigration("0001_only", "CREATE TABLE only_things (n integer)", runs);
+    const migration = statementMigration("0001_only", "only_things", runs);
     const driverErrors: Error[] = [];
     let lost = false;
     const lostSession = observed(tdb.db, (sql) => {
@@ -382,7 +451,7 @@ describe("a failing migration whose clean-up fails too", () => {
   test("BEGIN rejected: the announced migration is named and never runs", async () => {
     const runs: string[] = [];
     const messages: string[] = [];
-    const migration = statementMigration("0001_only", "CREATE TABLE only_things (n integer)", runs);
+    const migration = statementMigration("0001_only", "only_things", runs);
     const beginFailure = new Error("connection lost on begin");
     const failingBegin = observed(tdb.db, (sql) => {
       if (/^\s*BEGIN\b/i.test(sql)) {
@@ -409,7 +478,7 @@ describe("a failing migration whose clean-up fails too", () => {
 
   test("unlock rejected after a clean run: that rejection is the outcome, not swallowed", async () => {
     const runs: string[] = [];
-    const migration = statementMigration("0001_only", "CREATE TABLE only_things (n integer)", runs);
+    const migration = statementMigration("0001_only", "only_things", runs);
     const unlockFailure = new Error("connection lost on unlock");
     const failingUnlock = observed(tdb.db, (sql) => {
       if (/pg_advisory_unlock/i.test(sql)) {
@@ -522,11 +591,11 @@ describe("session state left by a migration", () => {
 describe("a migration changed after it was applied", () => {
   test("is refused at start, naming it, before any pending migration runs", async () => {
     const runs: string[] = [];
-    await migrate(tdb.db, [statementMigration("0001_first", "CREATE TABLE t1 (n integer)", runs)]);
+    await migrate(tdb.db, [statementMigration("0001_first", "t1_integer", runs)]);
     runs.length = 0;
 
-    const edited = statementMigration("0001_first", "CREATE TABLE t1 (n bigint)", runs);
-    const pending = statementMigration("0002_second", "CREATE TABLE t2 (n integer)", runs);
+    const edited = statementMigration("0001_first", "t1_bigint", runs);
+    const pending = statementMigration("0002_second", "t2_integer", runs);
     const outcome = migrate(tdb.db, [edited, pending]);
 
     await expect(outcome).rejects.toBeInstanceOf(MigrationChangedError);
@@ -540,8 +609,8 @@ describe("a migration changed after it was applied", () => {
   test("an unchanged content replays nothing", async () => {
     const runs: string[] = [];
     const list = [
-      statementMigration("0001_first", "CREATE TABLE t1 (n integer)", runs),
-      statementMigration("0002_second", "CREATE TABLE t2 (n integer)", runs),
+      statementMigration("0001_first", "t1_integer", runs),
+      statementMigration("0002_second", "t2_integer", runs),
     ];
     await migrate(tdb.db, list);
     runs.length = 0;
@@ -577,7 +646,7 @@ describe("a migration changed after it was applied", () => {
 
   test("an applied migration listed again without its content is refused before any SQL", async () => {
     const runs: string[] = [];
-    await migrate(tdb.db, [statementMigration("0001_first", "CREATE TABLE t1 (n integer)", runs)]);
+    await migrate(tdb.db, [statementMigration("0001_first", "t1_integer", runs)]);
     const statements: string[] = [];
     const spy = observed(tdb.db, (sql) => {
       statements.push(sql);
@@ -627,8 +696,8 @@ describe("a migration changed after it was applied", () => {
        CREATE TABLE t1 (n integer);`,
     );
     const runs: string[] = [];
-    const first = statementMigration("0001_first", "CREATE TABLE t1 (n integer)", runs);
-    const second = statementMigration("0002_second", "CREATE TABLE t2 (n integer)", runs);
+    const first = statementMigration("0001_first", "t1_integer", runs);
+    const second = statementMigration("0002_second", "t2_integer", runs);
 
     await migrate(tdb.db, [first, second]);
 
@@ -636,7 +705,7 @@ describe("a migration changed after it was applied", () => {
     expect(await recordedIds()).toEqual(["0001_first", "0002_second"]);
     // The row written without a checksum gets the current one: from now on,
     // an edit of 0001 is seen.
-    const edited = statementMigration("0001_first", "CREATE TABLE t1 (n bigint)", runs);
+    const edited = statementMigration("0001_first", "t1_bigint", runs);
     await expect(migrate(tdb.db, [edited, second])).rejects.toBeInstanceOf(MigrationChangedError);
   });
 });
@@ -674,12 +743,8 @@ describe("concurrent starts", () => {
 
   test("a competing run that finished while this one waited for the lock is not replayed", async () => {
     const runs: string[] = [];
-    const first = statementMigration("0001_first", "CREATE TABLE first_things (n integer)", runs);
-    const second = statementMigration(
-      "0002_second",
-      "CREATE TABLE second_things (n integer)",
-      runs,
-    );
+    const first = statementMigration("0001_first", "first_things", runs);
+    const second = statementMigration("0002_second", "second_things", runs);
     let lockRequests = 0;
     const waitingBehindCompetitor = observed(tdb.db, async (sql) => {
       if (/pg_advisory(_xact)?_lock/i.test(sql)) {
@@ -743,7 +808,7 @@ describe("migration list validation", () => {
       statements.push(sql);
     });
     const runs: string[] = [];
-    const once = statementMigration("0001_same", "CREATE TABLE same_things (n integer)", runs);
+    const once = statementMigration("0001_same", "same_things", runs);
 
     const outcome = migrate(spy, [once, once]);
 

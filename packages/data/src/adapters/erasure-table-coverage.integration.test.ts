@@ -61,9 +61,16 @@ beforeAll(async () => {
   `);
 });
 
+const ENTER_ROLE = {
+  [OWNER_ROLE]: () => tdb.db.exec(`SET ROLE ${OWNER_ROLE}`),
+  [APP_ROLE]: () => tdb.db.exec(`SET ROLE ${APP_ROLE}`),
+} as const;
+
+type FixtureRole = keyof typeof ENTER_ROLE;
+
 /** Runs `fn` with the session switched to `role`; the single PGlite session is restored after. */
-async function asRole<T>(role: string, fn: () => Promise<T>): Promise<T> {
-  await tdb.db.exec(`SET ROLE ${role}`);
+async function asRole<T>(role: FixtureRole, fn: () => Promise<T>): Promise<T> {
+  await ENTER_ROLE[role]();
   try {
     return await fn();
   } finally {
@@ -170,7 +177,7 @@ describe("inspectErasureTableCoverage", () => {
   });
 
   test("the application role sees fewer tables through information_schema, all through the catalog", async () => {
-    const viaInformationSchema = (role: string) =>
+    const viaInformationSchema = (role: FixtureRole) =>
       asRole(role, async () => {
         const res = await tdb.db.query<{ n: number }>(
           `SELECT count(DISTINCT table_name)::int AS n FROM information_schema.columns
