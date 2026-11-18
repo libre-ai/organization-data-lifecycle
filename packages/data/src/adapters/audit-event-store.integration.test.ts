@@ -60,8 +60,13 @@ async function visibleEventIds(tenant: string | null): Promise<string[]> {
   });
 }
 
-async function ownerCount(table: "audit_events" | "fixture_requests"): Promise<number> {
-  const res = await tdb.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${table}`);
+const OWNER_COUNT_QUERIES = {
+  audit_events: "SELECT count(*)::int AS n FROM audit_events",
+  fixture_requests: "SELECT count(*)::int AS n FROM fixture_requests",
+} as const;
+
+async function ownerCount(table: keyof typeof OWNER_COUNT_QUERIES): Promise<number> {
+  const res = await tdb.db.query<{ n: number }>(OWNER_COUNT_QUERIES[table]);
   return res.rows[0]?.n ?? -1;
 }
 
@@ -178,15 +183,16 @@ describe("database barrier (raw SQL, no store)", () => {
     });
   });
 
-  for (const statement of [
-    "UPDATE audit_events SET action = 'rewritten'",
-    "DELETE FROM audit_events",
-    "TRUNCATE audit_events",
-  ]) {
-    test(`the application role is refused: ${statement}`, async () => {
+  const refusedWrites: ReadonlyArray<readonly [verb: string, attempt: () => Promise<unknown>]> = [
+    ["UPDATE", () => tdb.db.exec("UPDATE audit_events SET action = 'rewritten'")],
+    ["DELETE", () => tdb.db.exec("DELETE FROM audit_events")],
+    ["TRUNCATE", () => tdb.db.exec("TRUNCATE audit_events")],
+  ];
+  for (const [verb, attempt] of refusedWrites) {
+    test(`the application role is refused: ${verb}`, async () => {
       await seed(TENANT_A, "evt_kept");
       await asTenant(TENANT_A, async () => {
-        await expect(tdb.db.exec(statement)).rejects.toThrow(/permission denied/);
+        await expect(attempt()).rejects.toThrow(/permission denied/);
       });
       expect(await ownerCount("audit_events")).toBe(1);
     });
